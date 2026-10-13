@@ -1,0 +1,32 @@
+# 运行产物：每次跑片都会生成成片、关键帧、音频，体积大且可重现，不入库
+runs/
+*.mp4
+*.wav
+*.mp3
+
+# 数据库与日志
+*.sqlite
+*.sqlite3
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 密钥：任何情况下都不许把 key 提交上去
+.env
+.env.*
+!.env.example
