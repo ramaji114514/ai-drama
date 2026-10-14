@@ -1,3 +1,12 @@
+---
+name: pipeline
+description: 整条短剧流水线的分工与产物契约，改任何创作环节之前先读这篇。
+scope: global
+priority: 90
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 00 · 流水线总纲
 
 ## 这一层的职责边界

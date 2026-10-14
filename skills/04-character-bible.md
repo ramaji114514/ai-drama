@@ -1,3 +1,14 @@
+---
+name: character-bible
+description: 跨镜头锁死同一个人物的长相与服装，短剧最容易崩的一环，出角色设定时必读。
+scope: content_type
+applies_to: [短剧]
+stage: [角色]
+priority: 85
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 04 · 角色一致性（Character Bible）
 
 > 这是整个项目里**最难、也最决定成片质量**的一环。前面所有环节的瑕疵都是小瑕疵，

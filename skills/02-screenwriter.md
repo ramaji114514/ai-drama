@@ -1,3 +1,14 @@
+---
+name: screenwriter
+description: 把选题落成骨架能消费的分场分镜表 JSON，写剧本或调整场次结构时用。
+scope: pipeline_stage
+applies_to: [短剧]
+stage: [剧本]
+priority: 70
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 02 · 剧本（Screenwriter）
 
 ## 你要做的事

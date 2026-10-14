@@ -30,6 +30,8 @@ from .base import (
     PRICING,
     AudioProvider,
     ImageProvider,
+    ProviderCaps,
+    ProviderError,
     T2IProvider,
     TextProvider,
     VideoProvider,
@@ -98,6 +100,27 @@ CAMERA_MOVES = {
 }
 
 
+def _second_archetype(seed: int, hero_name: str) -> tuple:
+    """挑第二个角色，**保证名字不与主角重名**。
+
+    [!] 这件事必须在这里做。曾经两个角色同名（都由同一个种子下标选出），
+    后果是三重的、而且全都不报错：
+      1. 定妆照写到同一个文件，第二个角色静默复用第一个的脸；
+      2. 参考锁定段里 `@图片1 = 角色「林晚」` 指不出是哪一个林晚；
+      3. 分镜里"林晚"这个名字同时命中两个角色，`character_by_name` 只留一个。
+    真厂商生成的剧本同样可能出现重名，所以 core/faces 那层还要能裁决
+    （朱锦 / 朱锦娘 的包含关系就是这么处理的）。
+    """
+    names = [a[0] for a in ARCHETYPES]
+    idx = (seed // 11 + 1) % len(ARCHETYPES)
+    for _ in range(len(ARCHETYPES)):
+        if ARCHETYPES[idx][0] != hero_name:
+            return ARCHETYPES[idx]
+        idx = (idx + 1) % len(ARCHETYPES)
+    # 整个表里只有一个名字时无解 —— 退化成带序号的别名，至少不撞车
+    return (f"{names[0]}B",) + ARCHETYPES[0][1:]
+
+
 # ————————————————————————————————————————----
 # 文本 provider：规则化的编剧引擎
 # ————————————————————————————————————————----
@@ -149,7 +172,7 @@ class DryRunTextProvider(TextProvider):
                shots_per_scene: int = 4) -> Dict[str, Any]:
         style_name, style_desc = STYLES[seed % len(STYLES)]
         hero_name, hero_sex, hero_age, hero_desc = ARCHETYPES[(seed // 7) % len(ARCHETYPES)]
-        second = ARCHETYPES[(seed // 11 + 1) % len(ARCHETYPES)]
+        second = _second_archetype(seed, hero_name)
         location = _pick(LOCATIONS, seed, 2)
         time_of_day = _pick(TIMES, seed, 3)
 
@@ -383,9 +406,20 @@ class DryRunVideoProvider(VideoProvider):
 
     刻意保留异步形态：这样 stages/video.py 里的并发编排、超时、重试逻辑
     全都能被真实验证，换成真厂商时不用重写调用方。
+
+    ``max_duration`` 默认给 8 秒 —— 这不是本地能力，而是**照着主流视频模型的
+    公开上限填的**（veo3.1 系列 8 秒、sora-2 12 秒）。dryrun 故意保留这条限制，
+    是为了让"创作侧要 12 秒、模型只给 8 秒"这个冲突在你还没接真厂商时就暴露出来，
+    而不是等付了钱才发现成片被截断。
     """
 
     name = "dryrun-video"
+    caps = ProviderCaps(
+        width=720, height=1280, fps=24,
+        max_duration=8.0, min_duration=1.0,
+        max_ref_images=1,
+        notes="本地推帧编码；上限照主流视频模型填，用来暴露时长冲突",
+    )
 
     def __init__(self, work_dir: Optional[Path] = None, image_provider: Optional[ImageProvider] = None):
         self.work_dir = Path(work_dir) if work_dir else Path.cwd() / "runs" / "_dryrun_jobs"
@@ -394,6 +428,18 @@ class DryRunVideoProvider(VideoProvider):
         self._jobs: Dict[str, Dict[str, Any]] = {}
 
     def submit(self, request: Dict[str, Any]) -> str:
+        # 契约检查：调用方给的时长必须在 caps 之内。
+        # 这里**抛错而不是截断** —— 截断会让成片节奏莫名其妙且无法归因。
+        duration = float(request.get("duration") or 4.0)
+        cap = self.caps.max_duration
+        if cap is not None and duration > cap + 1e-6:
+            raise ProviderError(
+                f"duration {duration:.2f}s 超过 {self.name} 的单段上限 {cap:.2f}s"
+                f"（镜头 {request.get('shot_label', '?')}）。"
+                f"拆分应该发生在上游 stage 里，provider 不做静默截断。",
+                retryable=False,
+                provider=self.name,
+            )
         job_id = "dryjob_" + hashlib.md5(
             json.dumps(request, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()[:12]

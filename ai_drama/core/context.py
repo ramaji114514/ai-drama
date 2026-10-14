@@ -27,6 +27,10 @@ class StageReport:
     money: float = 0.0
     notes: List[str] = field(default_factory=list)
     artifacts: Dict[str, str] = field(default_factory=dict)
+    #: 质检阶段专用：pass / fail / unchecked。**unchecked 不算通过。**
+    #: 放在 StageReport 上而不是只在 qc_report.json 里，是为了让
+    #: "这次到底查成没查成"在每一层汇总里都不会被丢掉。
+    qc_state: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -37,6 +41,7 @@ class StageReport:
             "money": round(self.money, 6),
             "notes": self.notes,
             "artifacts": self.artifacts,
+            "qc_state": self.qc_state,
         }
 
 
@@ -84,6 +89,11 @@ class StageContext:
     force: bool = False                    # 忽略缓存，全部重跑
     concurrency: int = 3
     verbose: bool = True
+    #: 严格质检：非 PASS 的 run 不被标记为完成。
+    #: 默认开 —— "已经交付了但没有证据证明它合格"是最危险的状态。
+    strict_qc: bool = True
+    #: 质检阶段把结论挂在这里，pipeline 收尾时据此决定状态
+    qc_report: Optional[Any] = None
 
     def log(self, msg: str) -> None:
         if self.verbose:

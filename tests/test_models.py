@@ -74,4 +74,4 @@ def test_stage_order_is_the_contract():
 
     单独断言一次，避免有人"顺手"调换 05 和 06 —— 那样语音就永远对不上画面。
     """
-    assert STAGES == ["script", "storyboard", "frames", "video", "audio", "concat"]
+    assert STAGES == ["script", "storyboard", "frames", "video", "audio", "concat", "qc"]

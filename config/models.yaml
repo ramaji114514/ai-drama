@@ -1,0 +1,200 @@
+# 模型目录 —— 数据，不是代码。
+#
+# 这里回答三个问题，三个都不该写死在 Python 里：
+#
+#   1. 这个模型**能生成多长**、支持哪些分辨率与画幅？
+#      （写死会让"换个模型"变成"改代码 + 重新测节奏"）
+#   2. 参考素材该放进请求的**哪个字段名**？
+#   3. 哪个贵、哪个擅长什么？
+#
+# 第 2 条是最容易吃暗亏的：**字段名写错，接口不报错，只是安静地忽略**。
+# 于是你传了参考图、模型没收到、出图漂了，而你以为"这个模型一致性不行"。
+# 不同厂商/不同型号的字段名不一样，所以它必须是配置。
+#
+# 改这里之后跑 `python run.py models` 能看到骨架实际读到了什么。
+
+version: "1"
+
+# ———————————————————————————————————————— 参考素材走哪个字段
+# 每条都是一次请求里的键名。写多个名字的意思是"都送一份"——
+# 有些聚合服务会把其中一个悄悄丢掉，两个都送不会出错。
+ref_fields:
+  # 参考图。实测生图与生视频都收 image=[url]
+  image: image
+  # 参考图的别名。按不同厂商文档的名字再送一份，防"零参考"。
+  # 留空字符串就是关掉。
+  image_alias: image_urls
+  # 参考视频（前序片段、音色锚点）。提示词里 @视频1 对应列表第 1 个。
+  video: video_urls
+  # 参考音频（@音频1）。多数服务限制 3 个以内、合计 15 秒内。
+  audio: audio_urls
+
+# ———————————————————————————————————————— 各形态的默认模型
+# 只写 id。改用哪个模型 = 改这一行。
+# 没配的形态会自动取该形态里最便宜的一条，并且 `models` 命令会标出来 ——
+# "我没配"和"我配了这个"在输出里不该长得一样。
+defaults:
+  text: deepseek-chat
+  image: qwen-image-2.0
+  video: dryrun
+  audio: cosyvoice
+
+# ———————————————————————————————————————— 模型清单
+#
+# 字段说明：
+#   kind             text / image / video / audio / t2i
+#   provider         由哪个适配器实现（对应 providers/ 里的注册名）
+#   tier             quality / balanced / fast —— 挑模型时的主要依据
+#   cost             1-5 相对档位，用于"这个活了不值得用贵的"这类判断
+#   price            单价（元/张 或 元/段）。**填了才能按金额累计成本，
+#                    不填只能按次数拦。照控制台单价填，别猜。**
+#   price_per_second 视频按秒计价时用这个
+#   max_duration     单次生成的最长秒数。**这是硬上限，不是建议值。**
+#                    镜头比它长会被拆成多段（见 core/media.plan_shot_split），
+#                    而不是静默截断 —— 截断的成片短得没有理由。
+#   strengths        一句话，会进上下文供挑选模型时判断。写具体点。
+#
+# 价格一律留空。这是骨架，不是价目表；填了就得维护，而不填只是
+# 退回"按次数拦"这种更保守的算法。
+
+models:
+
+  # —————— 视频 ——————
+  dryrun:
+    kind: video
+    provider: dryrun
+    tier: fast
+    cost: 1
+    max_duration: 8
+    resolutions: [720p]
+    aspect_ratios: [9:16, 16:9, 1:1]
+    strengths: 本地假渲染，不出网、不花钱、无 key。用于验证流水线与节奏。
+    notes: 它真的会跑完整条流水线并产出可播放的成片，只是画面是占位图。
+
+  dryrun-short:
+    kind: video
+    provider: dryrun
+    tier: fast
+    cost: 1
+    max_duration: 4
+    resolutions: [720p]
+    aspect_ratios: [9:16]
+    strengths: 同上，但单段上限压到 4 秒。
+    notes: 用来验证"超长镜头被自动拆段"这条路径 —— 不用花钱就能试。
+
+  # 下面几条是留给你接真厂商时抄的样板。id 与字段名都是真实存在的形态，
+  # 但**上线前请照你所用服务的 /models 接口核对一遍**：
+  # 凭文档和命名惯例猜出来的 id，错一半是常态。
+  seedance-2-vip-image-to-video:
+    kind: video
+    provider: ""
+    tier: balanced
+    cost: 3
+    max_duration: 10
+    resolutions: [720p, 1080p]
+    aspect_ratios: [9:16, 16:9]
+    supports_image_input: true
+    strengths: 图生视频，参考图一致性较好，价格适中。短剧主力。
+
+  kling-v2.1-master-i2v:
+    kind: video
+    provider: ""
+    tier: quality
+    cost: 4
+    max_duration: 10
+    resolutions: [720p, 1080p]
+    aspect_ratios: [9:16, 16:9]
+    supports_image_input: true
+    strengths: 动作与运镜更稳，贵。关键镜头与打斗戏用。
+
+  veo3.1-quality:
+    kind: video
+    provider: ""
+    tier: quality
+    cost: 5
+    max_duration: 8
+    resolutions: [720p, 1080p, 4k]
+    aspect_ratios: [16:9, 9:16]
+    strengths: 画质与光影最好。单段最长 8 秒 —— 15 秒的分镜喂给它必然被截。
+
+  sora-2:
+    kind: video
+    provider: ""
+    tier: quality
+    cost: 5
+    max_duration: 12
+    resolutions: [720p, 1080p]
+    aspect_ratios: [16:9, 9:16]
+    strengths: 单段可到 12 秒，长镜头少拆一刀。
+
+  # —————— 图像 ——————
+  seedream-4-5:
+    kind: image
+    provider: ""
+    tier: quality
+    cost: 3
+    resolutions: [1024x1024, 720x1280]
+    aspect_ratios: [2:3, 9:16, 1:1]
+    strengths: 中文场景与人物质感好，海报封面首选。
+
+  gemini-3-pro-image-preview:
+    kind: image
+    provider: ""
+    tier: quality
+    cost: 4
+    resolutions: [1024x1024, 720x1280]
+    aspect_ratios: [2:3, 9:16, 1:1]
+    supports_image_input: true
+    strengths: 角色形象与参考图一致性最好，短剧资产（定妆照、关键帧）首选。
+
+  gpt-image-2:
+    kind: image
+    provider: ""
+    tier: balanced
+    cost: 3
+    strengths: 指令遵循强。**画面里需要出现文字时用它**，别的模型画中文几乎必错。
+
+  flux-kontext-pro:
+    kind: image
+    provider: ""
+    tier: balanced
+    cost: 3
+    supports_image_input: true
+    strengths: 图生图与局部改写（改一件衣服、换一个表情），不需要整张重画。
+
+  qwen-image-2.0:
+    kind: image
+    provider: ""
+    tier: fast
+    cost: 1
+    strengths: 最便宜的一档。批量试构图、试景别时用，定稿再换贵的。
+
+  # —————— 文本 ——————
+  deepseek-chat:
+    kind: text
+    provider: ""
+    tier: balanced
+    cost: 1
+    strengths: 中文剧本与结构化 JSON 输出稳，便宜。日常量产用这个。
+
+  claude-sonnet-4-6:
+    kind: text
+    provider: ""
+    tier: quality
+    cost: 4
+    strengths: 长剧本的连贯性与人物一致性最好，贵。关键集用。
+
+  # —————— 语音 ——————
+  cosyvoice:
+    kind: audio
+    provider: ""
+    tier: balanced
+    cost: 2
+    strengths: 中文情感与音色克隆，可自托管。
+
+  minimax-speech:
+    kind: audio
+    provider: ""
+    tier: balanced
+    cost: 2
+    strengths: 中文配音自然，音色库大。快速起量用。

@@ -1,3 +1,14 @@
+---
+name: showrunner
+description: 把一句话想法变成能抓着人的竖屏短剧选题，做选题和定总基调时用。
+scope: pipeline_stage
+applies_to: [短剧]
+stage: [选题]
+priority: 70
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 01 · 选题（Showrunner）
 
 ## 你要做的事

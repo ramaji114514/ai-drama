@@ -76,9 +76,12 @@ def test_second_run_is_idempotent_and_costs_nothing(workspace: Path, need_ffmpeg
 
     assert result["state"] == "done"
     assert second["total_money"] == pytest.approx(first["total_money"])
-    # 每个阶段都应该报告"全部命中缓存"
+    # 每个"要花钱"的阶段都应该报告全部命中缓存。
+    # 两个例外都不花钱：
+    #   concat 每次都得重新拼一次盘上的分段（processed 记的是真拼了几段）；
+    #   qc 是纯本地检查，重跑一遍是它该做的事，也正是"重跑结果一致"的证明。
     for rep in result["reports"]:
-        assert rep["processed"] == 0 or rep["stage"] == "concat"
+        assert rep["processed"] == 0 or rep["stage"] in ("concat", "qc"), rep["stage"]
 
 
 @pytest.mark.ffmpeg
@@ -125,3 +128,51 @@ def test_pipeline_reports_failure_loudly(workspace: Path):
     stored = store.get_run(run.run_id)
     assert stored.state == "failed"
     assert "500" in (stored.error or "")
+
+
+@pytest.mark.ffmpeg
+def test_shot_longer_than_the_provider_cap_is_split_and_reassembled(
+    workspace: Path, need_ffmpeg: None
+):
+    """单段上限是生成模型的硬约束，不是创作侧的口味。
+
+    15 秒的分镜喂给「单段最长 8 秒」的模型，出来的必然是截断的片段，
+    而且不会报错 —— 你只会觉得"这个模型不太行"。所以骨架要在发出
+    请求之前就按上限切开，渲染完再拼回一个完整镜头。
+    """
+    from ai_drama.providers.base import ProviderCaps
+    from ai_drama.providers.dryrun import DryRunVideoProvider
+
+    class ShortVideo(DryRunVideoProvider):
+        caps = ProviderCaps(width=720, height=1280, fps=24, max_duration=2.5, min_duration=1.0)
+
+    pipe, store = _pipeline(workspace)
+    bundle = registry.build_bundle()
+    bundle.video = ShortVideo(work_dir=workspace / "work")
+    pipe.bundle = bundle
+
+    run = pipe.start("测试按上限拆段", scenes=1, shots_per_scene=3)
+    result = pipe.run(run)
+    assert result["state"] == "done", result
+
+    ep = store.get_episode(run.run_id)
+    split_any = False
+    for shot in ep.scenes[0].shots:
+        parts = paths.clip_parts(workspace, run.run_id, shot.scene_id, shot.order)
+        clip = paths.clip(workspace, run.run_id, shot.scene_id, shot.order)
+        # 拼完之后分段必须被清掉，只留一个完整镜头
+        assert clip.exists(), f"没有拼出完整镜头 {clip}"
+        assert not parts, f"分段没有清理：{parts}"
+        if shot.duration > ShortVideo.caps.max_duration:
+            split_any = True
+    assert split_any, "这条测试的前提（至少一个镜头超过上限）没成立"
+
+    # 拆段 + 重组不能吞掉时长：成片时长必须与分镜表对得上（±1.5 秒容差）
+    total = sum(s.duration for s in ep.scenes[0].shots)
+    assert probe_duration(Path(result["final_video"])) == pytest.approx(total, abs=1.5)
+
+    # 被拆过的镜头要在报告里留下痕迹，而不是悄悄多花了几笔钱
+    video_report = next(r for r in result["reports"] if r["stage"] == "video")
+    joined = " ".join(video_report["notes"])
+    assert "拆分" in joined or "上限" in joined, joined
+

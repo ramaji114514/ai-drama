@@ -175,7 +175,7 @@ class Episode:
 # 任务层
 # ————————————————————————————————————————----
 
-STAGES = ["script", "storyboard", "frames", "video", "audio", "concat"]
+STAGES = ["script", "storyboard", "frames", "video", "audio", "concat", "qc"]
 
 RUN_STATES = ["pending", "running", "done", "failed", "cancelled"]
 

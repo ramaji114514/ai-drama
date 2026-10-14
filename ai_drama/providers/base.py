@@ -21,11 +21,88 @@
 from __future__ import annotations
 
 import abc
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 Usage = Dict[str, Any]           # {"unit": "token"|"second"|..., "amount": float, "money": float}
 TextResult = Tuple[str, Usage]
+
+
+# ————————————————————————————————————————----
+# 能力声明：把"这家模型能干什么"变成数据，而不是散落在代码里的假设
+# ————————————————————————————————————————----
+
+@dataclass(frozen=True)
+class ProviderCaps:
+    """一个视频 provider 的硬能力边界。
+
+    为什么必须有这个东西（这是本骨架第一版的真实设计缺陷）：
+
+        "每个镜头拍几秒"在上一版里是**创作侧**决定的 —— 由
+        `estimate_shot_seconds()` 按台词长度和景别推算，夹到 2–8 秒。
+        那 8 秒是"人说话需要多久"的舒适区，**不是生成模型的能力上限**。
+
+        接真厂商的第一天就会踩：有些模型单次最长 5 秒，有些 8 秒，有些 12 秒。
+        按 12 秒的信息量写提示词、让一个上限 8 秒的模型去生成，
+        出来的必然是**截断**的画面 —— 而且它不会报错，只是默默少了一截。
+
+    所以骨架的规矩是：**创作侧提出"这个镜头需要 N 秒"，
+    provider 声明"我一次最多给 M 秒"，两者不符时由骨架负责拆，
+    而不是让模型悄悄截断。**
+
+    None 表示"没有这方面限制"（dryrun 与自托管服务常用）。
+    """
+
+    width: int = 720
+    height: int = 1280
+    fps: int = 24
+    max_duration: Optional[float] = None   # 单次调用的最长秒数
+    min_duration: float = 1.0
+    max_duration_ceiling: Optional[float] = None  # 硬顶：超了就报错，不拆
+    aspect_ratios: Tuple[str, ...] = ("9:16", "16:9", "1:1")
+    supports_image_input: bool = True
+    supports_negative_prompt: bool = True
+    max_ref_images: int = 1
+    notes: str = ""
+
+    @property
+    def size(self) -> Tuple[int, int]:
+        return (self.width, self.height)
+
+    def describe(self) -> str:
+        if self.max_duration is None:
+            dur = "不限"
+        else:
+            dur = f"{self.min_duration:g}-{self.max_duration:g}s"
+        text = (
+            f"{self.width}x{self.height}@{self.fps} 单段 {dur} "
+            f"| {'图生视频' if self.supports_image_input else '仅文生视频'}"
+        )
+        # notes 存在的意义就是被看见（比如目录里那条"单段最长 8 秒 ——
+        # 15 秒的分镜喂给它必然被截"）。不拼进来，它就只活在这个对象里。
+        if self.notes:
+            text += f" | {self.notes}"
+        return text
+
+
+# 没有声明 caps 的 provider 用它兜底 —— 保守但绝不限制创作侧。
+DEFAULT_CAPS = ProviderCaps(
+    max_duration=None,
+    notes="provider 未声明能力，按不限制处理（把上限定低会静默改变你的片子节奏）",
+)
+
+
+def caps_of(provider: Any) -> ProviderCaps:
+    """读一个 provider 的能力声明。
+
+    用模块级函数而不是给每个类加方法，是为了让**已经写好的旧适配器
+    一行都不改**也能继续跑：没有 ``caps`` 属性就当无限制。
+    """
+    caps = getattr(provider, "caps", None)
+    if isinstance(caps, ProviderCaps):
+        return caps
+    return DEFAULT_CAPS
 
 
 class ProviderError(RuntimeError):
@@ -91,6 +168,7 @@ class TextProvider(abc.ABC):
     """写剧本的模型。可以是云端 LLM，也可以是本地模板引擎。"""
 
     name = "text-base"
+    kind = "text"
 
     @abc.abstractmethod
     def generate(self, prompt: str, *, system: str = "", max_tokens: int = 4000,
@@ -98,13 +176,14 @@ class TextProvider(abc.ABC):
         """返回 (文本, usage)。"""
 
     def health(self) -> Dict[str, Any]:
-        return {"name": self.name, "ok": True}
+        return {"name": self.name, "kind": self.kind, "ok": True}
 
 
 class ImageProvider(abc.ABC):
     """出图。关键帧和定妆照都走它。"""
 
     name = "image-base"
+    kind = "image"
 
     @abc.abstractmethod
     def png(self, prompt: str, path: Path, *, size: Tuple[int, int] = (720, 1280),
@@ -113,20 +192,33 @@ class ImageProvider(abc.ABC):
         """把图写到 path，返回 usage。ref_image 用于跨镜头一致性（图生图）。"""
 
     def health(self) -> Dict[str, Any]:
-        return {"name": self.name, "ok": True}
+        return {"name": self.name, "kind": self.kind, "ok": True}
 
 
 class VideoProvider(abc.ABC):
-    """图生视频 / 文生视频。submit + poll 两段式。"""
+    """图生视频 / 文生视频。submit + poll 两段式。
+
+    ``caps`` 是这个类最重要的一件事：它把"我一次最多能生成几秒"从
+    厂商文档里搬进代码，让上游能在**提交任务之前**就发现自己要的时长不合理。
+    不声明就是无限制，见 DEFAULT_CAPS。
+    """
 
     name = "video-base"
+    kind = "video"
+    caps: ProviderCaps = DEFAULT_CAPS
 
     @abc.abstractmethod
     def submit(self, request: Dict[str, Any]) -> str:
         """提交任务，返回 job id。
 
         request 约定字段（各厂商实现自己挑用得上的）：
+
             prompt / image_path / duration / size / seed / negative_prompt
+            shot_label / part        # part = (第几段, 共几段)，用于日志与去重
+
+        实现方**必须**遵守 duration：拿到超过 ``caps.max_duration`` 的值时
+        应该抛 ProviderError(retryable=False)，而不是自己截断 ——
+        静默截断会让成片的节奏莫名其妙，且无法归因。
         """
 
     @abc.abstractmethod
@@ -145,13 +237,19 @@ class VideoProvider(abc.ABC):
         return None
 
     def health(self) -> Dict[str, Any]:
-        return {"name": self.name, "ok": True}
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "ok": True,
+            "caps": self.caps.describe(),
+        }
 
 
 class AudioProvider(abc.ABC):
     """配音 / 配乐 / 音效。短剧里这一层是刚需，不是可选项。"""
 
     name = "audio-base"
+    kind = "audio"
 
     @abc.abstractmethod
     def tts(self, text: str, path: Path, *, voice: str = "female_01",
@@ -167,11 +265,15 @@ class T2IProvider(abc.ABC):
     """纯文生图（不需要参考图）。定妆照用。"""
 
     name = "t2i-base"
+    kind = "t2i"
 
     @abc.abstractmethod
     def png(self, prompt: str, path: Path, *, size: Tuple[int, int] = (720, 1280),
             shot_label: str = "") -> Usage:
         ...
+
+    def health(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind, "ok": True}
 
 
 class Bundle:
@@ -188,18 +290,33 @@ class Bundle:
         video: VideoProvider,
         audio: AudioProvider,
         t2i: Optional[T2IProvider] = None,
+        catalog: Any = None,
     ):
         self.text = text
         self.image = image
         self.video = video
         self.audio = audio
         self.t2i = t2i
+        #: 模型目录（core.catalog.ModelCatalog）。适配器可以拿它查
+        #: 「我这个模型的多长上限、参考素材该放哪个字段」。允许为 None ——
+        #: 手搓 bundle 跑测试时不该被迫造一份目录。
+        self.catalog = catalog
 
     def all_providers(self) -> List[Any]:
         return [p for p in (self.text, self.image, self.video, self.audio, self.t2i) if p]
 
     def report(self) -> List[Dict[str, Any]]:
-        return [p.health() for p in self.all_providers()]
+        out = [p.health() for p in self.all_providers()]
+        if self.catalog is not None:
+            catalog = getattr(self.catalog, "problem", "")
+            out.append({
+                "name": "catalog",
+                "kind": "catalog",
+                "ok": not catalog,
+                "problem": catalog,
+                "models": len(getattr(self.catalog, "models", {}) or {}),
+            })
+        return out
 
 
 # ————————————————————————————————————————----

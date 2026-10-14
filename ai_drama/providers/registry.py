@@ -76,17 +76,75 @@ def build_bundle(**overrides: Any) -> Bundle:
     """构造一次 run 需要的 provider 组合。
 
     优先级：函数参数 > 环境变量 > dryrun 默认值。
+
+    还有一个隐式输入：**模型目录**（`config/models.yaml`）。适配器自己声明了
+    `caps` 就以它为准；没声明就照目录里同名条目的能力上限补上。这样"这个
+    模型一次能生成几秒"不会因为适配器作者忘了写而变成"不限制"，也就不会
+    冒出被静默截断的成片。
     """
     env = os.environ
     text = overrides.get("text") or create("text", env.get("AI_DRAMA_TEXT", "dryrun"))
     image = overrides.get("image") or create("image", env.get("AI_DRAMA_IMAGE", "dryrun"))
     video = overrides.get("video") or create("video", env.get("AI_DRAMA_VIDEO", "dryrun"))
     audio = overrides.get("audio") or create("audio", env.get("AI_DRAMA_AUDIO", "dryrun"))
-    t2i_name = env.get("AI_DRAMA_T2I", "")
+
+    # t2i 默认也是 dryrun —— 和另外四个一样。
+    #
+    # 这里原本的默认值是空字符串，于是 `providers` 命令把 t2i=dryrun 列成
+    # 可用、`doctor` 也不报错，而流水线实际拿到的是 None：定妆照被静默跳过，
+    # 参考锁定段因为"没有参考图"而一个字都没写。表现就是**参考图传输链路
+    # 整个不存在，但所有报告都显示成功** —— 正是这个项目要消灭的那类失败。
+    #
+    # 真要关掉它（比如你只想跑分镜、不想要定妆照），写 AI_DRAMA_T2I=none。
+    t2i_name = (env.get("AI_DRAMA_T2I", "dryrun") or "").strip()
     t2i = overrides.get("t2i")
-    if t2i is None and t2i_name:
+    if t2i is None and t2i_name.lower() not in ("", "none", "off", "null", "0"):
         t2i = create("t2i", t2i_name)
-    return Bundle(text=text, image=image, video=video, audio=audio, t2i=t2i)
+
+    bundle = Bundle(text=text, image=image, video=video, audio=audio, t2i=t2i)
+    catalog = overrides.get("catalog")
+    if catalog is None:
+        catalog = _load_catalog()
+    _apply_catalog_caps(bundle, catalog)
+    bundle.catalog = catalog
+    return bundle
+
+
+def _load_catalog():
+    """按当前工作目录读模型目录。读不到就退回内置的（并在 bundle 上留痕）。"""
+    from ..core.catalog import load_catalog
+    from pathlib import Path
+
+    try:
+        return load_catalog(Path.cwd())
+    except Exception as exc:                       # noqa: BLE001
+        from ..core.catalog import ModelCatalog
+
+        cat = ModelCatalog.builtin()
+        cat.problem = f"{type(exc).__name__}: {exc}"
+        return cat
+
+
+def _apply_catalog_caps(bundle: Bundle, catalog: Any) -> None:
+    """给"没自己声明上限"的视频 provider 补上目录里的上限。
+
+    只对视频 provider 生效：单段时长是视频独有的约束，把一条视频模型的
+    上限挂到文本 provider 上只会让 `providers` 命令的输出变得难以理解。
+    """
+    from .base import DEFAULT_CAPS
+
+    for provider in bundle.all_providers():
+        if not isinstance(provider, VideoProvider):
+            continue
+        current = getattr(provider, "caps", None)
+        if current is not None and current is not DEFAULT_CAPS:
+            continue          # 适配器自己说了算
+        found = catalog.caps_for_provider(getattr(provider, "name", ""))
+        if found is not None:
+            try:
+                provider.caps = found
+            except AttributeError:          # pragma: no cover - 只读适配器
+                continue
 
 
 __all__ = [
