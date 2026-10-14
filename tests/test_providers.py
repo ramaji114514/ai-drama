@@ -30,6 +30,33 @@ def test_default_is_dryrun_so_the_skeleton_runs_with_zero_keys():
     assert bundle.video.name.startswith("dryrun")
 
 
+def test_every_kind_including_t2i_defaults_to_dryrun(monkeypatch):
+    """五个形态一个都不能少。
+
+    这条是防回归的：`t2i` 曾经默认是空字符串，于是 `doctor` 打印
+    "未配置，定妆照会跳过"、而流水线其实在跑定妆照 —— 报告和现实各说一套。
+    """
+    for kind in registry.KIND_ENV:
+        monkeypatch.delenv(registry.kind_env(kind), raising=False)
+        assert registry.effective_name(kind) == "dryrun", kind
+    assert registry.build_bundle().t2i is not None
+
+
+def test_t2i_can_be_turned_off_explicitly(monkeypatch):
+    """关掉定妆照要能关掉，而且要关得干净。"""
+    for off in ("none", "off", "NONE", "0", "false", " "):
+        monkeypatch.setenv("AI_DRAMA_T2I", off)
+        assert registry.effective_name("t2i") == "", off
+        assert registry.build_bundle().t2i is None, off
+
+
+def test_an_empty_required_provider_says_what_to_do(monkeypatch):
+    """`AI_DRAMA_TEXT=` 这种手滑要给出人话，而不是 KeyError('')。"""
+    monkeypatch.setenv("AI_DRAMA_TEXT", "")
+    with pytest.raises(ValueError, match="AI_DRAMA_TEXT"):
+        registry.build_bundle()
+
+
 def test_unknown_provider_fails_loudly():
     """写错名字必须炸，不能悄悄退回默认 —— 那会让你以为在用真模型。"""
     with pytest.raises(KeyError):

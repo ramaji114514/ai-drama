@@ -139,18 +139,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
              if Path(p).exists()]
     print(f"字体    {len(fonts)} 个可用" + (f"  例：{fonts[0]}" if fonts else "  [!] 没找到中文字体，dryrun 出图会退化成默认位图字体"))
 
-    # provider 配置
+    # provider 配置。
+    #
+    # 这里**必须**问 registry 要结论，不能自己再写一份默认值表：之前这一份把
+    # t2i 的默认值写成"未配置，定妆照会跳过"，而 build_bundle 早就默认 dryrun
+    # 了 —— doctor 说一套、流水线做另一套，正是本项目要消灭的那类失败。
     print("\nprovider 配置（环境变量 -> 实际使用）:")
-    for kind, env_key, default in [
-        ("text", "AI_DRAMA_TEXT", "dryrun"),
-        ("image", "AI_DRAMA_IMAGE", "dryrun"),
-        ("video", "AI_DRAMA_VIDEO", "dryrun"),
-        ("audio", "AI_DRAMA_AUDIO", "dryrun"),
-        ("t2i", "AI_DRAMA_T2I", "（未配置，定妆照会跳过）"),
-    ]:
-        name = os.environ.get(env_key, default)
-        mark = "[OK]" if (kind == "t2i" and name.startswith("（")) or name in registry._REGISTRY[kind] else "[X]"
-        print(f"  {mark} {kind:<6} {env_key}={name}")
+    for kind in ("text", "image", "video", "audio", "t2i"):
+        env_key = registry.kind_env(kind)
+        raw = os.environ.get(env_key)
+        setting = f"{env_key} 未设置" if raw is None else f"{env_key}={raw}"
+        name = registry.effective_name(kind)
+        if not name:
+            tail = "已关闭" if kind == "t2i" else "已关闭 —— 但这个形态是必须的"
+            if kind != "t2i":
+                ok = False
+            print(f"  [{'!' if kind == 't2i' else 'X'}] {kind:<6} {setting} -> {tail}")
+            continue
+        if name in registry._REGISTRY[kind]:
+            extra = "（关掉它写 none）" if kind == "t2i" and raw is None else ""
+            print(f"  [OK] {kind:<6} {setting} -> {name}{extra}")
+        else:
+            ok = False
+            avail = ", ".join(sorted(registry._REGISTRY[kind])) or "（一个都没有）"
+            print(f"  [X] {kind:<6} {setting} -> 没注册过这个名字。可用：{avail}")
 
     print(f"\n数据库  {default_db_path()}")
     print(f"skills  {SKILLS_DIR}  ({'存在' if SKILLS_DIR.exists() else '缺失'})")

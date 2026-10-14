@@ -29,6 +29,42 @@ _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
     "t2i": {},
 }
 
+#: 每个形态由哪个环境变量决定。``doctor`` 与 ``build_bundle`` 共用这一份。
+KIND_ENV: Dict[str, str] = {
+    "text": "AI_DRAMA_TEXT",
+    "image": "AI_DRAMA_IMAGE",
+    "video": "AI_DRAMA_VIDEO",
+    "audio": "AI_DRAMA_AUDIO",
+    "t2i": "AI_DRAMA_T2I",
+}
+
+#: 环境变量没设时用的 provider。
+DEFAULT_PROVIDER = "dryrun"
+
+#: 写这些值表示"我明确不要这个形态"。只有 ``t2i`` 有意义 —— 另外四个是必须的。
+_OFF_VALUES = ("", "none", "off", "null", "0", "false", "no")
+
+
+def kind_env(kind: str) -> str:
+    """这个形态由哪个环境变量决定。"""
+    if kind not in KIND_ENV:
+        raise ValueError(f"unknown provider kind: {kind} (expected one of {list(KIND_ENV)})")
+    return KIND_ENV[kind]
+
+
+def effective_name(kind: str) -> str:
+    """这个形态**最终**会用哪个 provider；返回空字符串表示显式关闭。
+
+    **判定入口只有这一个。** 流水线与 `doctor` 都必须走它：两边各写一份默认值
+    的结果就是 `doctor` 说"未配置，定妆照会跳过"而流水线其实在跑定妆照 ——
+    报告和现实各说一套，正是这个项目要消灭的那类失败。
+    """
+    raw = os.environ.get(kind_env(kind))
+    if raw is None:
+        return DEFAULT_PROVIDER
+    raw = raw.strip()
+    return "" if raw.lower() in _OFF_VALUES else raw
+
 
 def register(name: str, kind: str) -> Callable[[type], type]:
     """把一个 provider 类注册进指定种类。"""
@@ -82,26 +118,30 @@ def build_bundle(**overrides: Any) -> Bundle:
     模型一次能生成几秒"不会因为适配器作者忘了写而变成"不限制"，也就不会
     冒出被静默截断的成片。
     """
-    env = os.environ
-    text = overrides.get("text") or create("text", env.get("AI_DRAMA_TEXT", "dryrun"))
-    image = overrides.get("image") or create("image", env.get("AI_DRAMA_IMAGE", "dryrun"))
-    video = overrides.get("video") or create("video", env.get("AI_DRAMA_VIDEO", "dryrun"))
-    audio = overrides.get("audio") or create("audio", env.get("AI_DRAMA_AUDIO", "dryrun"))
+    made: Dict[str, Any] = {}
+    for kind in ("text", "image", "video", "audio", "t2i"):
+        override = overrides.get(kind)
+        if override is not None:
+            made[kind] = override
+            continue
+        name = effective_name(kind)
+        if not name:
+            # 显式关闭。t2i 关掉是合法的（只跑分镜、不要定妆照），另外四个
+            # 关掉没有意义 —— 与其让 create("text", "") 抛一个看不懂的 KeyError，
+            # 不如直接说清楚。
+            if kind == "t2i":
+                made[kind] = None
+                continue
+            raise ValueError(
+                f"{kind_env(kind)} 是空的，但 {kind} provider 是必须的。"
+                f"删掉这个变量就会用默认值 {DEFAULT_PROVIDER}。"
+            )
+        made[kind] = create(kind, name)
 
-    # t2i 默认也是 dryrun —— 和另外四个一样。
-    #
-    # 这里原本的默认值是空字符串，于是 `providers` 命令把 t2i=dryrun 列成
-    # 可用、`doctor` 也不报错，而流水线实际拿到的是 None：定妆照被静默跳过，
-    # 参考锁定段因为"没有参考图"而一个字都没写。表现就是**参考图传输链路
-    # 整个不存在，但所有报告都显示成功** —— 正是这个项目要消灭的那类失败。
-    #
-    # 真要关掉它（比如你只想跑分镜、不想要定妆照），写 AI_DRAMA_T2I=none。
-    t2i_name = (env.get("AI_DRAMA_T2I", "dryrun") or "").strip()
-    t2i = overrides.get("t2i")
-    if t2i is None and t2i_name.lower() not in ("", "none", "off", "null", "0"):
-        t2i = create("t2i", t2i_name)
-
-    bundle = Bundle(text=text, image=image, video=video, audio=audio, t2i=t2i)
+    bundle = Bundle(
+        text=made["text"], image=made["image"], video=made["video"],
+        audio=made["audio"], t2i=made["t2i"],
+    )
     catalog = overrides.get("catalog")
     if catalog is None:
         catalog = _load_catalog()
@@ -149,5 +189,6 @@ def _apply_catalog_caps(bundle: Bundle, catalog: Any) -> None:
 
 __all__ = [
     "register", "available", "create", "build_bundle",
+    "kind_env", "effective_name", "KIND_ENV", "DEFAULT_PROVIDER",
     "TextProvider", "ImageProvider", "VideoProvider", "AudioProvider", "T2IProvider",
 ]

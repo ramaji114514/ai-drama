@@ -49,6 +49,9 @@ python run.py doctor      # 自检：python / ffmpeg / 字体 / provider 配置
 python run.py run --idea "你的想法"
 ```
 
+只想跑测试的话再装一个 pytest：`pip install pytest`（测试不需要 API key，
+但需要 ffmpeg 的那几个用例会在没装时自动跳过）。
+
 `doctor` 会打印每个 provider 的**实际生效值**（环境变量 → 用哪个），
 以及数据库路径和 `skills/` 目录位置。
 
@@ -145,7 +148,7 @@ ai-drama/
 **1. `submit + poll`，而不是一个阻塞的 `generate()`**
 视频模型动辄排队几分钟。阻塞式接口没法做并发、没法做超时、
 更没法在进程重启后恢复。提交拿 id、轮询查状态，是唯一正确的形态。
-（见 `ai_drama/providers/base.py:119` 的 `VideoProvider`。）
+（见 `ai_drama/providers/base.py` 的 `VideoProvider`。）
 
 **2. 每次调用都返回 `(返回值, usage)`**
 provider 自己**不记账**，它只报告"我花了多少"，由 `Store` 统一落盘。
@@ -237,7 +240,9 @@ class MyVideo(VideoProvider):
   网络抖动/429/5xx 标 `retryable=True`；参数非法/内容违规标 `False`。
   重试逻辑骨架已经写好了（指数退避 + 尊重 `retryable`）。
 - `usage` 必须如实报告 `{"unit": "second", "amount": 4.0, "money": 0.32}`。
-  定价基准在 `base.py:209` 的 `PRICING`，接真厂商时按实际改。
+  定价基准在 `base.py` 的 `PRICING`，接真厂商时按实际改。
+  模型的能力上限（单段几秒、支持几种分辨率）写进 `config/models.yaml`，
+  不要硬编码在适配器里 —— 见「四条约定」第 4 条。
 - 密钥从环境变量读，**不要写进代码**。命名约定：
   `AI_DRAMA_<PROVIDER>_API_KEY` / `AI_DRAMA_<PROVIDER>_BASE_URL`。
   见 `.env.example`。
@@ -295,10 +300,14 @@ microdrama 跑起来便宜但缺音轨、缺持久化，而且出错会假装成
 ## 测试
 
 ```bash
-python -m pytest -q
+pip install pytest
+python -m pytest
 ```
 
-覆盖范围（149 个用例）：
+（`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
+就行。加 `-q` 会只剩进度点、看不到 `149 passed` 那行汇总。）
+
+覆盖范围（159 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
@@ -313,6 +322,7 @@ python -m pytest -q
 | `test_identity.py` | 参考锁定段的编号与顺序、`NOT_INHERIT` 排除资产图版式、重生成提示**幂等**、判定解析（最低分门槛、`unchecked` 不说成通过） |
 | `test_faces.py` | 基准排序（用户钉的 > 参考图包 > 散落产物）、自动定的三个条件、**定不了就停下来问人**、`朱锦`/`朱锦娘` 的名字包含边界 |
 | `test_storyboard.py` | 出镜角色按出现位置排序、只对有参考图的角色点名、锁定段在提示词开头、**拥挤镜头被报出来而不是假装锁住** |
+| `test_cli.py` | `doctor` 报的 provider **就是流水线真会用的那个**、配错名字当场报阻断、`.env` 真的会被读、`--help` 里一个子命令都不少 |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
 而不是失败 —— 环境缺失不该被误报成代码缺陷。
