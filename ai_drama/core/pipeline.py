@@ -24,7 +24,8 @@ from .store import Store
 
 class Pipeline:
     def __init__(self, root: Path, store: Store, bundle, *, budget_usd: float = 0.0,
-                 concurrency: int = 3, force: bool = False, verbose: bool = True):
+                 concurrency: int = 3, force: bool = False, verbose: bool = True,
+                 strict_qc: bool = True):
         self.root = Path(root)
         self.store = store
         self.bundle = bundle
@@ -32,6 +33,7 @@ class Pipeline:
         self.concurrency = concurrency
         self.force = force
         self.verbose = verbose
+        self.strict_qc = strict_qc
 
     # ————————————————————————————————————--- 启动
 
@@ -61,6 +63,7 @@ class Pipeline:
             run=run, episode=episode, store=self.store, bundle=self.bundle,
             root=self.root, ledger=ledger, force=self.force,
             concurrency=self.concurrency, verbose=self.verbose,
+            strict_qc=self.strict_qc,
         )
 
         self.store.update_run(run.run_id, state="running")
@@ -102,19 +105,46 @@ class Pipeline:
         (paths.cost_report(self.root, run.run_id)).write_text(
             json.dumps(cost, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        state = "done" if (final.exists() and final.stat().st_size > 0) else "failed"
+
+        # ———————————————————————— 质检闸门
+        # 三态：pass / fail / unchecked。**unchecked 不通过** ——
+        # "没查成"和"查过没问题"在最终状态里绝对不能长得一样，
+        # 否则一次 ffprobe 缺失就能让整批片子带着未知问题被当成合格品交付。
+        has_video = final.exists() and final.stat().st_size > 0
+        qc_state = ctx.qc_report.state.value if ctx.qc_report is not None else ""
+        qc_ok = (qc_state == "pass") or not qc_state
+        blocked = self.strict_qc and has_video and not qc_ok
+
+        if blocked:
+            state = "failed"
+            error = (
+                f"质检未通过（{qc_state}），严格模式已开启。"
+                f"详见 {paths.qc_report(self.root, run.run_id)}"
+            )
+        else:
+            state = "done" if has_video else "failed"
+            error = None if has_video else "流水线结束但没有产出 final_video"
+            if has_video and not qc_ok:
+                error = f"已放行，但质检结论是 {qc_state}（严格模式已关闭）"
+
         self.store.update_run(
             run.run_id,
             state=state,
             final_video=str(final) if final.exists() else None,
-            error=None if state == "done" else "流水线结束但没有产出 final_video",
+            error=error,
         )
         if self.verbose:
             print(f"\n=== 完成 ===\n状态: {state}\n成片: {final}\n花费: ${cost['total_money']:.4f}")
+            if qc_state:
+                print(f"质检: {qc_state.upper()}")
+            if error:
+                print(f"说明: {error}")
         return {
             "run_id": run.run_id,
             "state": state,
             "final_video": str(final) if final.exists() else None,
+            "qc_state": qc_state,
+            "error": error,
             "reports": [r.to_dict() for r in reports],
             "cost": cost,
         }

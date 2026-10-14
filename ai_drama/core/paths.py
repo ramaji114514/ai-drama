@@ -50,6 +50,22 @@ def clip(root: Path, run_id: str, scene_id: str, order: int) -> Path:
     return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_clip.mp4"
 
 
+def clip_part(root: Path, run_id: str, scene_id: str, order: int, part: int) -> Path:
+    """长镜头被拆成多段时的第 part 段（从 1 开始）。
+
+    和 clip() 分开放，是为了让"这个镜头到底渲了几段"在文件系统上一眼可见 ——
+    排查"某镜为什么比别的贵"时，看目录就知道它被拆了几次。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_p{part:02d}_clip.mp4"
+
+
+def clip_parts(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    """该镜头已渲出的所有分段，按段号排序。"""
+    return sorted(
+        scene_dir(root, run_id, scene_id).glob(f"shot_{order:03d}_p*_clip.mp4")
+    )
+
+
 def voice(root: Path, run_id: str, scene_id: str, order: int) -> Path:
     return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_audio.wav"
 
@@ -68,3 +84,13 @@ def bgm(root: Path, run_id: str) -> Path:
 
 def cost_report(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "cost_report.json"
+
+
+def qc_report(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "qc_report.json"
+
+
+def rules_file(root: Path) -> Path:
+    """质检规则。放在**仓库根**而不是 run 目录里 —— 它是全项目共用的配置，
+    改一次所有片子都跟着变，不该跟着单次 run 走。"""
+    return Path(root) / "config" / "qc_rules.yaml"

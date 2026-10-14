@@ -249,8 +249,64 @@ def estimate_shot_seconds(shot: Shot, *, cps: float = 4.5, min_s: float = 2.0,
     这是短剧节奏的量化模型：台词决定下限（人说话要时间），景别决定基础节奏。
     骨架先给出一个**可计算、可解释**的公式，而不是让模型随口说一个数字 ---
     以后要调节奏，改这里的参数即可，全片一起变。
+
+    [!] 注意这里的 max_s 是**创作侧**的上限（这个镜头最多值得拍多久），
+    不是生成模型的能力上限。后者由 provider 的 ProviderCaps 声明，
+    两者的差距由 split_shot_seconds() 负责弥合 —— 不要在这里夹到模型上限，
+    否则你等于让"模型能生成多久"偷偷决定了"这场戏该拍多久"。
     """
     base = FRAMING_PACE.get(shot.framing, 3.0)
     speech = len(shot.dialogue.strip()) / cps if shot.dialogue.strip() else 0.0
     need = max(base, speech + 0.4)
     return round(max(min_s, min(max_s, need)), 2)
+
+
+def plan_shot_split(duration: float, *, max_duration: Optional[float],
+                    min_duration: float = 1.0) -> List[float]:
+    """把一个镜头的时长切成若干段，每段都不超过 provider 的单段上限。
+
+    返回每段的秒数，总和 == duration（在浮点误差内）。
+
+    为什么是"拆"而不是"截断"：
+
+        一个 12 秒的镜头意味着**画面里有 12 秒的信息量**（三四个动作节拍）。
+        把它交给一个上限 8 秒的模型，你会在不报错的情况下拿到一段
+        只演完前 2/3 的视频 —— 后半截的动作凭空消失，而成片时长还写着 12 秒。
+        正确做法是拆成 8s + 4s 两次生成再接上，每一段都是它自己的完整镜头。
+
+    均分而不是"先塞满"：先塞满会让最后一段只剩 0.5 秒，无法成镜。
+    """
+    total = max(0.0, float(duration))
+    if not total:
+        return []
+    cap = max_duration if (max_duration and max_duration > 0) else total
+    floor = max(0.1, float(min_duration or 0.1))
+    if cap > floor or total <= cap:
+        cap = max(cap, floor)
+    parts = max(1, int(math.ceil(total / cap - 1e-9)))
+    each = total / parts
+    if each < floor and parts > 1:
+        # 切出来会有段落短于下限：少切一段，宁可某一段超一点上限，
+        # 也不要生成一串 0.3 秒的碎片（那在成片里就是闪光）。
+        parts = max(1, int(math.floor(total / floor)))
+        each = total / parts
+    out = [round(each, 3) for _ in range(parts)]
+    # 把舍入误差补给最后一段，保证总和不变
+    out[-1] = round(out[-1] + (total - sum(out)), 3)
+    return [p for p in out if p > 0] or [round(total, 3)]
+
+
+def split_plan_for(ctx, shot: Shot) -> List[float]:
+    """按当前 bundle 里 video provider 的声明，算出这个镜头要怎么拆。
+
+    没有 caps 声明的 provider 一律当作不限制 —— **这是刻意的**：
+    把上限定低会静默改变你片子的节奏，比不限制更糟。
+    """
+    from ..providers.base import caps_of
+
+    caps = caps_of(ctx.bundle.video)
+    return plan_shot_split(
+        shot.duration,
+        max_duration=caps.max_duration,
+        min_duration=caps.min_duration,
+    )
