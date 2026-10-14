@@ -87,9 +87,18 @@ def build_bundle(**overrides: Any) -> Bundle:
     image = overrides.get("image") or create("image", env.get("AI_DRAMA_IMAGE", "dryrun"))
     video = overrides.get("video") or create("video", env.get("AI_DRAMA_VIDEO", "dryrun"))
     audio = overrides.get("audio") or create("audio", env.get("AI_DRAMA_AUDIO", "dryrun"))
-    t2i_name = env.get("AI_DRAMA_T2I", "")
+
+    # t2i 默认也是 dryrun —— 和另外四个一样。
+    #
+    # 这里原本的默认值是空字符串，于是 `providers` 命令把 t2i=dryrun 列成
+    # 可用、`doctor` 也不报错，而流水线实际拿到的是 None：定妆照被静默跳过，
+    # 参考锁定段因为"没有参考图"而一个字都没写。表现就是**参考图传输链路
+    # 整个不存在，但所有报告都显示成功** —— 正是这个项目要消灭的那类失败。
+    #
+    # 真要关掉它（比如你只想跑分镜、不想要定妆照），写 AI_DRAMA_T2I=none。
+    t2i_name = (env.get("AI_DRAMA_T2I", "dryrun") or "").strip()
     t2i = overrides.get("t2i")
-    if t2i is None and t2i_name:
+    if t2i is None and t2i_name.lower() not in ("", "none", "off", "null", "0"):
         t2i = create("t2i", t2i_name)
 
     bundle = Bundle(text=text, image=image, video=video, audio=audio, t2i=t2i)

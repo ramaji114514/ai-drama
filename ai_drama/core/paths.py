@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import List
 
 
 def run_dir(root: Path, run_id: str) -> Path:
@@ -40,6 +41,18 @@ def episode_json(root: Path, run_id: str) -> Path:
 def portrait(root: Path, run_id: str, name: str) -> Path:
     safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_") or "char"
     return run_dir(root, run_id) / f"character_{safe}.png"
+
+
+def portrait_variants(root: Path, run_id: str, name: str) -> List[Path]:
+    """这个角色名下**所有**的定妆照文件，按文件名排序。
+
+    为什么会有多张：重跑、换模型重渲、人工替换都会留下旧文件。多张脸
+    并存时"哪张算准"必须有个明确说法（见 core/faces.py），
+    否则后续十几集用哪张就变成了看目录顺序。
+    """
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_") or "char"
+    out = sorted(run_dir(root, run_id).glob(f"character_{safe}*.png"))
+    return [p for p in out if p.is_file()]
 
 
 def keyframe(root: Path, run_id: str, scene_id: str, order: int) -> Path:

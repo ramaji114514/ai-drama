@@ -27,7 +27,15 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .core import media, paths
-from .core.models import STAGES, Run
+from .core.faces import (
+    FaceAudit,
+    FaceCandidate,
+    audit_lines,
+    conflict_question,
+    decide,
+    pick_baseline,
+)
+from .core.models import Episode, STAGES, Run
 from .core.pipeline import Pipeline
 from .core.qc import QcRules, rules_path
 from .core.store import Store, default_db_path
@@ -336,6 +344,71 @@ def cmd_qc(args: argparse.Namespace) -> int:
     return {"pass": 0, "fail": 2, "unchecked": 3}.get(state, 1)
 
 
+def cmd_faces(args: argparse.Namespace) -> int:
+    """谁的脸算准。
+
+    这一层解决的是真实现场里最难堪的一件事：某个角色的主形象被模型的内容
+    护栏拒了，你换三家模型各出一张，于是产物目录里躺着三张脸 ——
+    **谁当准，后面十几集全跟着走**，而且等你发现时已经渲完了。
+
+    本命令做两件事，并且**明确区分它做不到的事**：
+      1. 归拢候选（这个角色名下所有定妆照），排出基准（来源 > 类别 > 新旧）
+      2. 报告冲突：除了基准还有别的脸，如实列出来
+    它**不做**两两判定 —— 那需要视觉模型，没配就不编造结论，
+    而不是把"没查成"印成"通过"。
+    """
+    load_env()
+    store = open_store(args)
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    run = store.get_run(args.run_id)
+    if run is None:
+        print(f"run not found: {args.run_id}")
+        return 1
+    ep_json = paths.episode_json(root, run.run_id)
+    if not ep_json.exists():
+        print(f"还没有分镜：{ep_json}")
+        return 1
+    ep = Episode.from_dict(json.loads(ep_json.read_text(encoding="utf-8")))
+
+    audits = []
+    for ch in ep.characters:
+        files = paths.portrait_variants(root, run.run_id, ch.name)
+        if not files:
+            audits.append(FaceAudit(character=ch.name, skipped="run 目录里没有这个角色的定妆照"))
+            continue
+        # 新者在前：同来源同类别时，"最新的一张"才是默认基准
+        files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        used = Path(ch.ref_image).name if ch.ref_image else ""
+        cands = []
+        for i, p in enumerate(files):
+            # 流水线正在用的那张 = "参考图包里在用的"，它是已经定下来的选择
+            source = "pack" if p.name == used else "asset"
+            cands.append(FaceCandidate(
+                character=ch.name, asset_id=p.name, summary=p.name,
+                local=str(p), source=source, kind="角色", seq=len(files) - i,
+            ))
+        keeper, why = pick_baseline(cands)
+        audits.append(decide(ch.name, cands, {}, baseline=keeper, why=why))
+
+    if args.json:
+        print_json([a.to_dict() for a in audits])
+        return 0
+
+    for line in audit_lines(audits):
+        print(line)
+    question = conflict_question(audits)
+    if question:
+        print("")
+        print(question)
+    if any(a.conflicted for a in audits):
+        print("")
+        print("注意：这里只给出基准与冲突清单，**没有**做两两判定。")
+        print("      判定需要视觉模型（参考图 + 候选图一起交给它逐人打分），")
+        print("      现在没有配置，所以这些候选一律按「未确认」看待 ——")
+        print("      不是「已经确认是同一个人」。")
+    return 0
+
+
 def cmd_rules(args: argparse.Namespace) -> int:
     """看当前生效的质检规则，以及它是从哪来的。
 
@@ -624,6 +697,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--render", action="store_true", help="打印拼好的注入文本")
     sp.add_argument("--json", action="store_true", help="附元数据 JSON")
     sp.set_defaults(func=cmd_skills)
+
+    sp = sub.add_parser("faces", help="谁的脸算准：定妆照多张并存时给出基准与冲突")
+    sp.add_argument("run_id")
+    add_common(sp)
+    sp.add_argument("--json", action="store_true", help="附结构化 JSON")
+    sp.set_defaults(func=cmd_faces)
 
     return p
 

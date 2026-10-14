@@ -100,6 +100,27 @@ CAMERA_MOVES = {
 }
 
 
+def _second_archetype(seed: int, hero_name: str) -> tuple:
+    """挑第二个角色，**保证名字不与主角重名**。
+
+    [!] 这件事必须在这里做。曾经两个角色同名（都由同一个种子下标选出），
+    后果是三重的、而且全都不报错：
+      1. 定妆照写到同一个文件，第二个角色静默复用第一个的脸；
+      2. 参考锁定段里 `@图片1 = 角色「林晚」` 指不出是哪一个林晚；
+      3. 分镜里"林晚"这个名字同时命中两个角色，`character_by_name` 只留一个。
+    真厂商生成的剧本同样可能出现重名，所以 core/faces 那层还要能裁决
+    （朱锦 / 朱锦娘 的包含关系就是这么处理的）。
+    """
+    names = [a[0] for a in ARCHETYPES]
+    idx = (seed // 11 + 1) % len(ARCHETYPES)
+    for _ in range(len(ARCHETYPES)):
+        if ARCHETYPES[idx][0] != hero_name:
+            return ARCHETYPES[idx]
+        idx = (idx + 1) % len(ARCHETYPES)
+    # 整个表里只有一个名字时无解 —— 退化成带序号的别名，至少不撞车
+    return (f"{names[0]}B",) + ARCHETYPES[0][1:]
+
+
 # ————————————————————————————————————————----
 # 文本 provider：规则化的编剧引擎
 # ————————————————————————————————————————----
@@ -151,7 +172,7 @@ class DryRunTextProvider(TextProvider):
                shots_per_scene: int = 4) -> Dict[str, Any]:
         style_name, style_desc = STYLES[seed % len(STYLES)]
         hero_name, hero_sex, hero_age, hero_desc = ARCHETYPES[(seed // 7) % len(ARCHETYPES)]
-        second = ARCHETYPES[(seed // 11 + 1) % len(ARCHETYPES)]
+        second = _second_archetype(seed, hero_name)
         location = _pick(LOCATIONS, seed, 2)
         time_of_day = _pick(TIMES, seed, 3)
 
