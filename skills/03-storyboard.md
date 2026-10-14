@@ -1,3 +1,14 @@
+---
+name: storyboard
+description: 给每一镜定景别机位与表演节拍，把剧本翻译成画面时用。
+scope: pipeline_stage
+applies_to: [短剧]
+stage: [分镜]
+priority: 65
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 03 · 分镜（Storyboard）
 
 ## 你要做的事

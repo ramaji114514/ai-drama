@@ -415,6 +415,103 @@ def catalog_path_show(root: Path) -> Path:
     return catalog_path(root)
 
 
+def cmd_skills(args: argparse.Namespace) -> int:
+    """技能目录 / 装载预览 / 正文查看。
+
+    这个命令存在的理由是**两级披露的第二级需要一个人工入口**：
+    平时常驻上下文的只有 description，那"这一环节到底会加载哪几篇、
+    为什么另外几篇没加载"就必须能查 —— 否则一篇技能静默失效，
+    你只会觉得"模型今天不太行"。
+    """
+    from .core.skills import (
+        ACTIVE_LIMIT,
+        BODY_BUDGET_TOKENS,
+        assemble,
+        estimate_tokens,
+        load_body,
+        load_skills,
+        render_index,
+        select,
+    )
+
+    load_env()
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    metas = load_skills(root)
+    if not metas:
+        print(f"[!] {root / 'skills'} 下没有技能")
+        return 1
+
+    if args.show:
+        hit = next((m for m in metas if m.name == args.show), None)
+        if hit is None:
+            names = ", ".join(m.name for m in metas)
+            print(f"[X] 没有名叫 {args.show!r} 的技能。现有：{names}")
+            return 1
+        body = load_body(hit)
+        print(f"# {hit.name}（{hit.scope}，priority {hit.priority}）")
+        print(f"# {hit.description}")
+        print(f"# 正文约 {estimate_tokens(body)} token")
+        print()
+        print(body)
+        return 0
+
+    if args.check:
+        bad = 0
+        for m in metas:
+            body_tokens = estimate_tokens(load_body(m))
+            issues = list(m.problems)
+            if body_tokens > 5000:
+                issues.append(f"正文 {body_tokens} token，超过单篇 5000 的建议值 —— 建议拆篇")
+            if issues:
+                bad += 1
+                print(f"[!] {m.name}")
+                for issue in issues:
+                    print(f"      {issue}")
+        if not bad:
+            print(f"[OK] {len(metas)} 篇全过：都有 owner、description 够长、正文不超长")
+        else:
+            print(f"\n{bad} / {len(metas)} 篇需要处理")
+        return 0 if not bad else 2
+
+    stage = getattr(args, "stage", "") or ""
+    content_type = getattr(args, "content_type", "") or ""
+    print(f"技能目录  {root / 'skills'}（{len(metas)} 篇）")
+    print(f"激活上限  同时 ≤{ACTIVE_LIMIT} 篇，正文合计 ≤{BODY_BUDGET_TOKENS} token")
+    print(f"常驻成本  约 {estimate_tokens(render_index(metas))} token（只有 description）\n")
+
+    if not stage and not content_type:
+        print("全部技能（常驻上下文的就是这些行）：")
+        for m in sorted(metas, key=lambda x: x.sort_key):
+            flag = "" if m.is_active else f"  [{m.status} 不加载]"
+            print(f"  {m.scope:<16} p{m.priority:<3} {m.index_line()}{flag}")
+        print("\n用 --stage / --content-type 看某一环节实际会加载哪几篇。")
+        if getattr(args, "json", False):
+            print()
+            print_json([m.to_dict() for m in metas])
+        return 0
+
+    sel = select(metas, content_type=content_type, stage=stage)
+    print(f"这一环节（内容形态={content_type or '不限'} / 环节={stage or '不限'}）：")
+    print(sel.explain())
+    print(f"\n正文合计约 {sel.body_tokens} token")
+    text, _ = assemble(metas, content_type=content_type, stage=stage)
+    if getattr(args, "render", False) and text:
+        print("\n" + "=" * 70)
+        print(text)
+    elif text:
+        print("（加 --render 可打印拼好的注入文本）")
+    if getattr(args, "json", False):
+        print()
+        print_json({
+            "chosen": [m.to_dict() for m in sel.chosen],
+            "skipped_scope": [m.name for m in sel.skipped_scope],
+            "skipped_status": [m.name for m in sel.skipped_status],
+            "skipped_budget": [m.name for m in sel.skipped_budget],
+            "body_tokens": sel.body_tokens,
+        })
+    return 0
+
+
 def print_result(result: Dict[str, Any]) -> None:
     print("\n--- 阶段报告 ---")
     for rep in result.get("reports", []):
@@ -517,6 +614,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", help="只看某一形态：text / image / video / audio / t2i")
     sp.add_argument("--json", action="store_true", help="附完整目录 JSON")
     sp.set_defaults(func=cmd_models)
+
+    sp = sub.add_parser("skills", help="看技能目录，以及某一环节实际会加载哪几篇")
+    add_common(sp)
+    sp.add_argument("--stage", help="流水线环节（选题 / 剧本 / 分镜 / 角色 / 提示词 / 质检）")
+    sp.add_argument("--content-type", help="内容形态（短剧 / 短视频 / 图文 …）")
+    sp.add_argument("--show", help="打印某一篇的正文")
+    sp.add_argument("--check", action="store_true", help="体检：owner / description / 正文长度")
+    sp.add_argument("--render", action="store_true", help="打印拼好的注入文本")
+    sp.add_argument("--json", action="store_true", help="附元数据 JSON")
+    sp.set_defaults(func=cmd_skills)
 
     return p
 

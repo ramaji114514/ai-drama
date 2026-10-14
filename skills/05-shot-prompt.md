@@ -1,3 +1,14 @@
+---
+name: shot-prompt
+description: 把一镜的动作与角色身份拼成图像提示词和视频提示词，写镜头提示词时用。
+scope: pipeline_stage
+applies_to: [短剧]
+stage: [提示词]
+priority: 70
+version: 1.0.0
+owner: ramaji114514
+status: active
+---
 # 05 · 镜头提示词（Shot Prompt）
 
 ## 你要做的事
