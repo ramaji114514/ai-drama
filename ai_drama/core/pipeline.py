@@ -25,7 +25,7 @@ from .store import Store
 class Pipeline:
     def __init__(self, root: Path, store: Store, bundle, *, budget_usd: float = 0.0,
                  concurrency: int = 3, force: bool = False, verbose: bool = True,
-                 strict_qc: bool = True):
+                 strict_qc: bool = True, subtitles: bool = True):
         self.root = Path(root)
         self.store = store
         self.bundle = bundle
@@ -34,6 +34,7 @@ class Pipeline:
         self.force = force
         self.verbose = verbose
         self.strict_qc = strict_qc
+        self.subtitles = subtitles
 
     # ————————————————————————————————————--- 启动
 
@@ -63,7 +64,7 @@ class Pipeline:
             run=run, episode=episode, store=self.store, bundle=self.bundle,
             root=self.root, ledger=ledger, force=self.force,
             concurrency=self.concurrency, verbose=self.verbose,
-            strict_qc=self.strict_qc,
+            strict_qc=self.strict_qc, subtitles=self.subtitles,
         )
 
         self.store.update_run(run.run_id, state="running")

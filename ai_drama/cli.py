@@ -205,6 +205,16 @@ def cmd_runs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _subtitles_wanted() -> bool:
+    """字幕默认开；`AI_DRAMA_SUBTITLES=0/none/off/false/no` 关掉。
+
+    和 `--no-subtitles` 的关系是"两者都能关，谁都不能强行开" ——
+    环境变量适合"我这个项目就是不要字幕"，命令行开关适合"这一条别烧"。
+    """
+    raw = (os.environ.get("AI_DRAMA_SUBTITLES", "") or "").strip().lower()
+    return raw not in ("0", "none", "off", "false", "no")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     load_env()
     store = open_store(args)
@@ -215,6 +225,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         budget_usd=args.budget, concurrency=args.concurrency,
         force=args.force, verbose=True,
         strict_qc=not getattr(args, "no_strict_qc", False),
+        subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
     )
     stages = args.stages.split(",") if args.stages else None
     run = pipe.start(
@@ -240,6 +251,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         budget_usd=args.budget, concurrency=args.concurrency,
         force=args.force, verbose=True,
         strict_qc=not getattr(args, "no_strict_qc", False),
+        subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
     )
     stages = args.stages.split(",") if args.stages else None
     result = pipe.resume(args.run_id, stages=stages)
@@ -663,6 +675,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="忽略缓存全部重跑")
     sp.add_argument("--no-strict-qc", action="store_true",
                     help="质检非 PASS 也放行（默认严格：unchecked/fail 都不算完成）")
+    sp.add_argument("--no-subtitles", action="store_true",
+                    help="不把字幕烧进画面（SRT 照样写出来，可外挂）")
     add_common(sp)
     sp.set_defaults(func=cmd_run)
 
@@ -673,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--concurrency", type=int, default=3)
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--no-strict-qc", action="store_true")
+    sp.add_argument("--no-subtitles", action="store_true")
     add_common(sp)
     sp.set_defaults(func=cmd_resume)
 

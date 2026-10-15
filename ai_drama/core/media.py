@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import math
+import os
+import re
 import shutil
 import struct
 import subprocess
+import sys
 import wave
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -51,13 +54,20 @@ def require_ffprobe() -> str:
     return exe
 
 
-def run(cmd: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedProcess:
-    """跑一条 ffmpeg 命令；失败时把 stderr 尾部带进异常，方便定位。"""
+def run(cmd: Sequence[str], *, timeout: int = 900,
+        cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    """跑一条 ffmpeg 命令；失败时把 stderr 尾部带进异常，方便定位。
+
+    ``cwd`` 存在的唯一理由：Windows 上 ffmpeg 的滤镜参数里写绝对路径极易炸
+    （盘符的冒号、反斜杠、中文目录都是雷）。烧字幕那类滤镜的参数改成
+    **先切到工作目录、再传一个裸文件名**，就能全部绕开。
+    """
     proc = subprocess.run(
         list(cmd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        cwd=str(cwd) if cwd else None,
     )
     if proc.returncode != 0:
         tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-8:]
@@ -349,3 +359,227 @@ def split_plan_for(ctx, shot: Shot) -> List[float]:
         max_duration=caps.max_duration,
         min_duration=caps.min_duration,
     )
+
+
+# ———————————————————————————————————————————————————————————— 字幕
+#
+# 为什么自己生成 ASS、而不是直接拿 SRT 去烧：
+#
+# libass 读 SRT 时会**假定脚本坐标系是 384x288**，于是 force_style 里的
+# FontSize / MarginV 都不是像素，而是按 (视频高度 / 288) 放大的相对值。
+# 实测 720x1280 下 FontSize=22 渲染出约 90px 高的字、MarginV=40 直接贴到画面
+# 底部；同一个字号换到 1080p 又是另一个大小（加 original_size= 也没用，
+# 它改的是"这份字幕是按多大尺寸排的"，不改变坐标系）。
+#
+# 自己写 ASS 并把 PlayResX / PlayResY 设成**视频的真实尺寸**，FontSize 与
+# MarginV 就是真正的像素 —— 竖屏横屏一套参数都成立，想调多大就写多大。
+# 实测确认：PlayRes 720x1280 + Fontsize 44 → 字高约 44px，中文正常渲染。
+
+
+_FONT_CANDIDATES = (
+    ("win32", ("Microsoft YaHei", "微软雅黑", "SimHei", "SimSun",
+               "Noto Sans CJK SC", "Arial")),
+    ("darwin", ("PingFang SC", "Hiragino Sans GB", "STHeiti", "Songti SC",
+                "Noto Sans CJK SC", "Helvetica")),
+    ("linux", ("Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei",
+               "Noto Sans SC", "DejaVu Sans")),
+)
+
+
+def subtitle_font() -> str:
+    """烧字幕用的字体名（libass 按名字找系统字体，不是按文件路径）。
+
+    默认取当前平台上第一个常见的 CJK 字体。**中文片千万别用默认的 sans** ——
+    libass 找不到能画汉字的字体时不是报错，而是画出一排方块（豆腐块），
+    那种成片看上去像渲染事故。
+    要换字体设环境变量 AI_DRAMA_SUBTITLE_FONT（写字体名，不是路径）。
+    """
+    override = (os.environ.get("AI_DRAMA_SUBTITLE_FONT") or "").strip()
+    if override:
+        return override
+    plat = "win32" if sys.platform.startswith("win") else (
+        "darwin" if sys.platform == "darwin" else "linux")
+    for name, fonts in _FONT_CANDIDATES:
+        if name == plat:
+            return fonts[0]
+    return "Noto Sans CJK SC"
+
+
+def probe_size(path: Path, *, timeout: int = 60) -> Optional[Tuple[int, int]]:
+    """量视频画面的宽高；量不出来返回 None。
+
+    字幕的字号与边距按画面高度换算，所以这个数必须来自**成片本身**，
+    不能拿 provider 声明的尺寸顶替 —— 中间任何一步（拆段、lip-sync、
+    concat）改了分辨率，声明值就和实际对不上了。
+    """
+    exe = require_ffprobe()
+    proc = subprocess.run(
+        [exe, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0:s=x", str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+    )
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+    if not raw:
+        return None
+    parts = raw[0].strip().split("x")
+    if len(parts) != 2:
+        return None
+    try:
+        w, h = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def _srt_time(seconds: float) -> str:
+    ms = max(0, int(round(seconds * 1000)))
+    h, ms = divmod(ms, 3600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def build_srt(cues: List[Tuple[float, float, str]], path: Path) -> Path:
+    """写出标准 SRT。
+
+    烧录用的是 build_ass()，这份 SRT 是**给平台和剪辑软件用的交付物** ——
+    真要发布时多数平台更希望你上传一份干净的字幕轨而不是烙在画面上的字。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    blocks: List[str] = []
+    for idx, (start, end, text) in enumerate(cues, start=1):
+        blocks.append(
+            f"{idx}\n{_srt_time(start)} --> {_srt_time(end)}\n{text.strip()}\n"
+        )
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return path
+
+
+_SPEAKER_PREFIX = re.compile(r"^\s*[^：:（(]{1,12}\s*[：:]\s*")
+_STAGE_DIRECTION = re.compile(r"[（(][^（()）]{0,40}[)）]")
+
+
+def speech_text(line: str) -> str:
+    """把剧本行变成"屏幕上该显示的那句话"。
+
+    剧本行是给演员和配音看的：``苏蔓：（低声）不对。`` 里的说话人和语气提示
+    烙到画面上就是业余 —— 观众看到的是"谁在说"和"怎么说"，不是台词本身。
+
+    去掉两样：圆括号里的表演提示、行首的说话人前缀。
+    去完什么都不剩就退回原文：显示一句带提示的台词，总比显示空白强。
+    """
+    out = _STAGE_DIRECTION.sub("", line or "")
+    out = _SPEAKER_PREFIX.sub("", out)
+    out = " ".join(out.split())
+    return out or (line or "").strip()
+
+
+def _ass_time(seconds: float) -> str:
+    cs = max(0, int(round(seconds * 100)))
+    h, cs = divmod(cs, 360_000)
+    m, cs = divmod(cs, 6_000)
+    s, cs = divmod(cs, 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _ass_escape(text: str) -> str:
+    """把可能被 ASS 当成语法的字符换成全角。
+
+    ``{}`` 在 ASS 里是特效覆盖块的分界，``\\`` 后面跟 N/n/h 会被当成换行/硬空格。
+    台词是模型写的，出现这些字符的概率不为零，而一旦出现，轻则样式乱掉、
+    重则整句消失。换成全角是最省事又看得出区别的处理。
+    """
+    out = text.replace("{", "｛").replace("}", "｝")
+    out = out.replace("\\", "＼")
+    return out.replace("\r", "").replace("\n", "\\N").strip()
+
+
+def build_ass(
+    cues: List[Tuple[float, float, str]],
+    path: Path,
+    *,
+    width: int,
+    height: int,
+    font: str = "",
+    font_ratio: float = 0.042,
+    margin_v_ratio: float = 0.075,
+    margin_lr_ratio: float = 0.083,
+) -> Path:
+    """生成带真实 PlayRes 的 ASS（字号/边距都是像素）。
+
+    尺寸全部按**画面高度的比例**换算，所以同一套参数在 720x1280 和 1920x1080
+    上观感一致；要改观感就改这三个比例，不要改像素值。
+    """
+    name = font or subtitle_font()
+    font_px = max(12, int(round(height * font_ratio)))
+    margin_v = max(8, int(round(height * margin_v_ratio)))
+    margin_lr = max(8, int(round(width * margin_lr_ratio)))
+    outline = max(1, int(round(font_px * 0.045)))
+
+    head = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {width}\n"
+        f"PlayResY: {height}\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, "
+        "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        # 描边是必须的：短剧画面明暗变化大，白字压在浅色背景上会直接看不见。
+        f"Style: Default,{name},{font_px},&H00FFFFFF,&H00000000,&H80000000,"
+        f"-1,0,0,0,100,100,0,0,1,{outline},0,2,"
+        f"{margin_lr},{margin_lr},{margin_v},1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+    )
+    lines: List[str] = []
+    for start, end, text in cues:
+        body = _ass_escape(text)
+        if not body:
+            continue
+        lines.append(
+            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{body}"
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def burn_ass(video: Path, ass: Path, out: Path, *,
+             work_dir: Optional[Path] = None) -> Path:
+    """把 ASS 烧进画面。
+
+    ASS 文件先复制进工作目录、再以**裸文件名**传给滤镜，并且让 ffmpeg
+    在这个目录里跑 —— Windows 下滤镜参数里的绝对路径（盘符冒号、反斜杠、
+    中文目录）是踩过几次的雷，绕开它比转义它省事得多。
+    """
+    ff = require_ffmpeg()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    work = work_dir or (out.parent / "_subwork")
+    work.mkdir(parents=True, exist_ok=True)
+    staged = work / "_sub.ass"
+    staged.write_bytes(ass.read_bytes())
+    cmd = [
+        ff, "-y",
+        "-i", str(video.resolve()),
+        "-vf", "ass=_sub.ass",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out.resolve()),
+    ]
+    try:
+        run(cmd, cwd=work)
+    finally:
+        staged.unlink(missing_ok=True)
+    return out

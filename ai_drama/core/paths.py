@@ -13,6 +13,9 @@
         scenes/sc01/shot_000_audio.wav
         scenes/sc01/scene_video.mp4
         final_video.mp4
+        timeline.json         每个镜头在成片里的起止秒数
+        subtitles.srt         字幕交付物（标准 SRT）
+        subtitles.ass         烧录用的 ASS（带样式）
         cost_report.json
 """
 
@@ -110,6 +113,27 @@ def cost_report(root: Path, run_id: str) -> Path:
 
 def qc_report(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "qc_report.json"
+
+
+def timeline(root: Path, run_id: str) -> Path:
+    """全片时间轴：每个镜头落在成片的哪一段。
+
+    字幕、音画对齐、以及"这一镜为什么比别的贵"的排查，都要用同一份时间轴。
+    写成文件是为了**可核对** —— 字幕飘了的时候，第一件事就是打开它看
+    每个镜头的起止秒数跟你以为的是不是一致。
+    """
+    return run_dir(root, run_id) / "timeline.json"
+
+
+def subtitles(root: Path, run_id: str) -> Path:
+    """字幕交付物（标准 SRT）。多数平台更希望你上传字幕轨，而不是烙在画面上。"""
+    return run_dir(root, run_id) / "subtitles.srt"
+
+
+def subtitle_ass(root: Path, run_id: str) -> Path:
+    """烧录用的 ASS。和 SRT 分开是刻意的：SRT 是给人/平台看的，
+    ASS 带样式与像素级坐标，是给 libass 看的，两者格式不能混用。"""
+    return run_dir(root, run_id) / "subtitles.ass"
 
 
 def rules_file(root: Path) -> Path:

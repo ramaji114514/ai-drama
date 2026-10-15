@@ -1,6 +1,6 @@
-"""阶段 7：拼接 + 混音。
+"""阶段 7：拼接 + 混音 + 字幕。
 
-两件确定性的事，都该由代码而不是模型来做：
+三件确定性的事，都该由代码而不是模型来做：
 
   1. **拼接**：场级拼成本场视频，再拼成全片。
      用 ffmpeg 的 concat demuxer（先统一成 .ts），比逐个 re-encode 快得多，
@@ -12,6 +12,9 @@
      做法：按镜头顺序累加**实际时长**（ffprobe 量出来的，不是名义上的 duration），
      得到每句台词在全片时间轴上的起点，再用 ffmpeg 的 adelay 把它们铺平，
      最后和画面一起 amix 混流。
+  3. **字幕**：时间轴跟音画对齐用的是**同一份累加结果** —— 这一点是刻意的，
+     字幕飘掉几乎永远是"字幕自己算了一遍时间"造成的。烧录走 ASS
+     （字号是真实像素），同时写出一份标准 SRT 当交付物。
 
 素材优先取**口型同步后**的片段（stage06 的产物），没有才退回原始片段 ——
 见 _clip_for()。所以这一阶段也是"lip-sync 有没有真的接上"的最终检验点：
@@ -140,15 +143,36 @@ def run(ctx: StageContext) -> StageReport:
         paths.run_dir(ctx.root, ctx.run.run_id) / "_work",
     )
 
-    # ————————————————————————————----- 音画对齐
+    # ————————————————————————————----- 音画对齐 + 时间轴
     segments: List[Tuple[Path, float]] = []
+    cues: List[Tuple[float, float, str]] = []
+    timeline_rows: List[Dict[str, object]] = []
     offset = 0.0
     for _sid, _scene_path, shots, durations in scene_videos:
         for shot, dur in zip(shots, durations):
             voice = paths.voice(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
-            if shot.dialogue.strip() and voice.exists() and voice.stat().st_size > 0:
+            has_voice = voice.exists() and voice.stat().st_size > 0
+            line = shot.dialogue.strip()
+            if line and has_voice:
                 segments.append((voice, offset))
+                # 字幕停留多久：以**配音实际长度**为准（加一点收尾留白），
+                # 但不超出这一镜 —— 镜头切了字幕还在，观众会以为说这话的是下一镜的人。
+                spoken = probe_duration(voice) or dur
+                span = min(dur, max(0.8, spoken + 0.4))
+                cues.append((offset, offset + span, media.speech_text(line)))
+            timeline_rows.append({
+                "scene": shot.scene_id,
+                "shot": shot.label,
+                "start": round(offset, 3),
+                "duration": round(dur, 3),
+                "dialogue": line,
+            })
             offset += dur
+
+    tl_path = paths.timeline(ctx.root, ctx.run.run_id)
+    tl_path.write_text(
+        json.dumps(timeline_rows, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     final = paths.episode_video(ctx.root, ctx.run.run_id)
     media.mix_voice_and_music(
@@ -159,9 +183,54 @@ def run(ctx: StageContext) -> StageReport:
     )
     final_raw.unlink(missing_ok=True)
 
+    # ————————————————————————————----- 字幕
+    # SRT 一律写出来（它是交付物：多数平台要的是字幕轨，不是烙在画面上的字），
+    # 烧不烧由 ctx.subtitles 决定。这两个开关分开是有意的 ——
+    # "我不要字幕" 和 "我要一份能自己调样式的外挂字幕" 是两件事。
+    srt_note = "无台词，未生成字幕"
+    if cues:
+        srt = media.build_srt(cues, paths.subtitles(ctx.root, ctx.run.run_id))
+        report.artifacts["subtitles"] = str(srt)
+        report.artifacts["timeline"] = str(tl_path)
+        if ctx.subtitles:
+            size = media.probe_size(final)
+            if not size:
+                report.notes.append(
+                    "[!] 量不出成片画面尺寸，字幕没有烧录（SRT 已写出，可用剪辑软件外挂）"
+                )
+                report.failed += 1
+                srt_note = f"字幕 {len(cues)} 句（SRT 已写出，未烧录：量不出画面尺寸）"
+            else:
+                width, height = size
+                ass = media.build_ass(
+                    cues, paths.subtitle_ass(ctx.root, ctx.run.run_id),
+                    width=width, height=height,
+                )
+                subbed = final.with_name("final_video_subbed.mp4")
+                media.burn_ass(final, ass, subbed,
+                               work_dir=paths.run_dir(ctx.root, ctx.run.run_id) / "_work")
+                final.unlink()
+                subbed.replace(final)
+                report.artifacts["subtitle_script"] = str(ass)
+                srt_note = (
+                    f"字幕 {len(cues)} 句已烧录（{width}x{height} / 字体 "
+                    f"{media.subtitle_font()} / 字号按画面高度版式换算）"
+                )
+        else:
+            # 两个开关都能关掉烧录，就别只报其中一个 —— 报告里点名一个
+            # 用户没动过的开关，是最让人怀疑报告的一类小事。
+            srt_note = (
+                f"字幕 {len(cues)} 句写成 SRT，**未烧录**"
+                f"（--no-subtitles 或 AI_DRAMA_SUBTITLES=0）"
+            )
+    else:
+        report.artifacts["timeline"] = str(tl_path)
+
     report.artifacts["final_video"] = str(final)
     report.notes.append(
         f"成片 {final.name} / 约 {offset:.1f}s / 对齐台词 {len(segments)} 句"
     )
-    ctx.log(f"[concat] [OK] {report.notes[-1]}")
+    report.notes.append(srt_note)
+    ctx.log(f"[concat] [OK] {report.notes[-2]}")
+    ctx.log(f"[concat] {srt_note}")
     return report

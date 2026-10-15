@@ -85,6 +85,7 @@ python run.py run --idea "你的想法"
 --concurrency 并发数（默认 3）
 --force       忽略缓存全部重跑
 --no-strict-qc  质检非 PASS 也照样把 run 标成 done（默认是严格模式）
+--no-subtitles  不把字幕烧进画面（SRT 照样写出来，可外挂）
 ```
 
 ---
@@ -105,7 +106,7 @@ ai-drama/
 │   │   ├── pipeline.py         八阶段编排 + 质检闸门
 │   │   ├── context.py          StageContext + Ledger（成本闸门）
 │   │   ├── paths.py            产物路径约定（dryrun 与真厂商落在同一处）
-│   │   ├── media.py            ffmpeg 封装 + 单段时长拆分（plan_shot_split）
+│   │   ├── media.py            ffmpeg 封装 + 单段时长拆分 + 字幕（SRT/ASS）
 │   │   ├── catalog.py          模型目录：caps / ref_fields / 默认模型
 │   │   ├── miniyaml.py         零依赖 YAML 子集（配置需要能写注释）
 │   │   ├── qc.py               确定性质检 + 三态判定（pass/fail/**unchecked**）
@@ -124,7 +125,7 @@ ai-drama/
 │       ├── stage04_video.py       镜头视频（并发 + 拆段 + 独立重试）
 │       ├── stage05_audio.py       配音 + BGM
 │       ├── stage06_lipsync.py     口型同步（只做有台词的镜头）
-│       ├── stage07_concat.py      拼接 + 混音 + 字幕
+│       ├── stage07_concat.py      拼接 + 混音 + 烧字幕（先写时间轴）
 │       └── stage08_qc.py          确定性质检（不调模型）
 ├── skills/                     创意层：提示词与判断标准（见 skills/README.md）
 ├── docs/
@@ -134,6 +135,9 @@ ai-drama/
 └── runs/<run_id>/              每次运行的产物
     ├── episode.json            分镜定稿 —— 人手可改，改完直接 resume
     ├── character_<名>.png      定妆照
+    ├── timeline.json           每个镜头在成片里的起止秒数（字幕与对齐共用）
+    ├── subtitles.srt           字幕交付物（标准 SRT，可直接上传平台）
+    ├── subtitles.ass           烧录用的 ASS（带样式，字号是真实像素）
     ├── qc_report.json          质检报告
     ├── scenes/sc01/
     │   ├── shot_000_keyframe.png
@@ -144,7 +148,7 @@ ai-drama/
     └── cost_report.json
 ```
 
-### 九条设计决定（以及为什么）
+### 十条设计决定（以及为什么）
 
 **1. `submit + poll`，而不是一个阻塞的 `generate()`**
 视频模型动辄排队几分钟。阻塞式接口没法做并发、没法做超时、
@@ -205,6 +209,25 @@ provider 自己**不记账**，它只报告"我花了多少"，由 `Store` 统�
 同一个理由，`config/qc_rules.yaml` 里不认识的键会**报错**而不是忽略，
 `config/models.yaml` 里重复的键也是 —— "改了配置没生效"是最难发现的一类问题。
 
+**10. 字幕的时间轴必须和音画对齐共用一份累加结果**
+字幕飘掉几乎永远是"字幕自己又算了一遍时间"。所以 `stage07_concat.py` 在按
+ffprobe 实际时长累加、决定每句台词落在哪一秒的**同一个循环**里生成字幕，
+并把这份时间轴写成 `timeline.json` —— 字幕飘了的时候，第一件事就是打开它
+核对每个镜头的起止秒数跟你以为的是不是一致。
+
+另一个坑是字幕的**字号不是像素**：libass 读 SRT 时会假定脚本坐标系是
+384x288，于是 `force_style` 里的 FontSize / MarginV 都按 (视频高/288) 放大
+（实测 720x1280 下 FontSize=22 渲染出约 90px 的字，直接糊在画面底部；
+加 `original_size=` 也没用，它说的是"这份字幕按多大尺寸排的"，不改变坐标系）。
+所以本骨架**自己生成 ASS** 并把 `PlayResX/PlayResY` 设成视频真实尺寸，
+字号与边距就是真正的像素，同一套比例参数在竖屏横屏上都成立。
+
+还有一条：**烧录不等于字幕**。SRT 一律写出来当交付物（多数平台要的是字幕轨，
+不是烙在画面上的字），烧不烧由 `--no-subtitles` / `AI_DRAMA_SUBTITLES` 决定。
+最后，`tests/test_subtitles.py` 里有一条**像素级**断言 ——
+"字幕文件生成了"完全不代表画面上有字：滤镜写错、路径没找到、字体缺字，
+ffmpeg 全都不会报错，它只是什么都不画。
+
 ---
 
 ## 换厂商：只改一行
@@ -227,6 +250,14 @@ AI_DRAMA_VIDEO=dryrun
 AI_DRAMA_AUDIO=dryrun
 AI_DRAMA_T2I=dryrun       # 定妆照。写 none 才跳过（跳过 = 参考锁定整段失效）
 AI_DRAMA_LIPSYNC=dryrun   # 口型同步。none = 不做（成片嘴型不对齐，报告里会说）
+```
+
+另外三个不是 provider 的开关：
+
+```bash
+AI_DRAMA_SUBTITLES=0          # 不把字幕烧进画面（SRT 照样写出来）
+AI_DRAMA_SUBTITLE_FONT=...    # 烧字幕用哪个字体（写字体名，不是路径）
+AI_DRAMA_DB=...               # SQLite 落在哪
 ```
 
 ### 接一个真厂商要写多少
@@ -316,9 +347,9 @@ python -m pytest
 ```
 
 （`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
-就行。加 `-q` 会只剩进度点、看不到 `173 passed` 那行汇总。）
+就行。加 `-q` 会只剩进度点、看不到 `185 passed` 那行汇总。）
 
-覆盖范围（173 个用例）：
+覆盖范围（185 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
@@ -335,6 +366,7 @@ python -m pytest
 | `test_storyboard.py` | 出镜角色按出现位置排序、只对有参考图的角色点名、锁定段在提示词开头、**拥挤镜头被报出来而不是假装锁住** |
 | `test_cli.py` | `doctor` 报的 provider **就是流水线真会用的那个**、配错名字当场报阻断、`.env` 真的会被读、`--help` 里一个子命令都不少 |
 | `test_lipsync.py` | 只送有台词的镜头、输出**无音轨**且时长不变、**两个故意写坏的 provider 被骨架拒收**、已有产物不重复付费、没配 provider 时大声报出来、拼接优先用同步后的片段、`require_lipsync` 开关 |
+| `test_subtitles.py` | 剧本行去说话人与表演提示、SRT 时间戳进位、**ASS 的 PlayRes 就是画布尺寸**（字号才是像素）、`{}`/`\` 被转义、**像素级断言字幕真的烧进了画面**、关掉烧录仍留下可用的 SRT |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
 而不是失败 —— 环境缺失不该被误报成代码缺陷。
@@ -350,6 +382,8 @@ python -m pytest
       三态判定（通过 / 不通过 / **没查成**），严格模式下非 PASS 的 run 不算完成
 - [x] **参考图在提示词里点名**：`core/identity.py` 的参考锁定段 + 排除资产图版式
 - [x] **多张脸谁当准**：`core/faces.py` + `python run.py faces`（纯函数层，可离线测）
+- [x] **字幕**：`stages/stage07_concat.py` 在算音画对齐的同一个循环里生成字幕，
+      烧录走自写的 ASS（字号是真实像素），同时留下 `timeline.json` 与 `subtitles.srt`
 - [x] **口型同步**：`stages/stage06_lipsync.py` + `LipSyncProvider`（第六种形态）。
       骨架强校验两条契约（无音轨、时长不变），坏适配器会被拒收而不是悄悄毁掉时间轴。
       默认 `dryrun` 只做无音轨重编码并自陈"没有真的改嘴型"；要真出效果按

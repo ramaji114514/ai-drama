@@ -94,6 +94,9 @@ class StageContext:
     strict_qc: bool = True
     #: 质检阶段把结论挂在这里，pipeline 收尾时据此决定状态
     qc_report: Optional[Any] = None
+    #: 把字幕烧进画面。默认开 —— 竖屏短剧大量是静音刷的，没有字幕等于没台词。
+    #: 关掉不等于没有字幕：SRT 照样写出来，只是不烙在画面上。
+    subtitles: bool = True
 
     def log(self, msg: str) -> None:
         if self.verbose:
