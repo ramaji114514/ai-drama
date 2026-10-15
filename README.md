@@ -16,7 +16,7 @@ python run.py run --idea "深夜加班回家，发现自家门锁被换过，猫
 
 ## 这是什么 / 不是什么
 
-**是**：一条能跑通的七阶段流水线。每个阶段独立、可重跑、有落盘、
+**是**：一条能跑通的八阶段流水线。每个阶段独立、可重跑、有落盘、
 有缓存、有成本记账、有断点续跑。创意层（提示词）和骨架层（流程）分离。
 
 **不是**：一个"接上就能出片"的成品。默认的 `dryrun` provider 只是
@@ -80,7 +80,7 @@ python run.py run --idea "你的想法"
 --style       视觉风格
 --scenes      场次数（默认 3）
 --shots       每场镜头数（默认 4）
---stages      只跑指定阶段，逗号分隔：script,storyboard,frames,video,audio,concat,qc
+--stages      只跑指定阶段，逗号分隔：script,storyboard,frames,video,audio,lipsync,concat,qc
 --budget      预算上限（美元），超了抛异常停止。0 = 不限
 --concurrency 并发数（默认 3）
 --force       忽略缓存全部重跑
@@ -102,7 +102,7 @@ ai-drama/
 │   ├── core/
 │   │   ├── models.py           Shot / Scene / Episode / Character / Run / CostEntry
 │   │   ├── store.py            SQLite 落盘 + 成本记账（断点续跑的基础）
-│   │   ├── pipeline.py         七阶段编排 + 质检闸门
+│   │   ├── pipeline.py         八阶段编排 + 质检闸门
 │   │   ├── context.py          StageContext + Ledger（成本闸门）
 │   │   ├── paths.py            产物路径约定（dryrun 与真厂商落在同一处）
 │   │   ├── media.py            ffmpeg 封装 + 单段时长拆分（plan_shot_split）
@@ -113,7 +113,7 @@ ai-drama/
 │   │   ├── faces.py            多张脸谁当准（纯函数，可离线测）
 │   │   └── skills.py           技能两级披露：预筛 → 选择 → 注入
 │   ├── providers/
-│   │   ├── base.py             五个 ABC + 能力声明 + 重试 + 定价表  ← 全项目最重要
+│   │   ├── base.py             六个 ABC + 能力声明 + 重试 + 定价表  ← 全项目最重要
 │   │   ├── registry.py         注册表 + build_bundle() 依赖注入点
 │   │   ├── dryrun.py           本地假渲染（零成本跑通全流程）
 │   │   └── _template.py        接真厂商时照这个补
@@ -123,8 +123,9 @@ ai-drama/
 │       ├── stage03_frames.py      关键帧（并发）
 │       ├── stage04_video.py       镜头视频（并发 + 拆段 + 独立重试）
 │       ├── stage05_audio.py       配音 + BGM
-│       ├── stage06_concat.py      拼接 + 混音 + 字幕
-│       └── stage07_qc.py          确定性质检（不调模型）
+│       ├── stage06_lipsync.py     口型同步（只做有台词的镜头）
+│       ├── stage07_concat.py      拼接 + 混音 + 字幕
+│       └── stage08_qc.py          确定性质检（不调模型）
 ├── skills/                     创意层：提示词与判断标准（见 skills/README.md）
 ├── docs/
 │   ├── architecture.md         设计决定与硬约束
@@ -143,7 +144,7 @@ ai-drama/
     └── cost_report.json
 ```
 
-### 八条设计决定（以及为什么）
+### 九条设计决定（以及为什么）
 
 **1. `submit + poll`，而不是一个阻塞的 `generate()`**
 视频模型动辄排队几分钟。阻塞式接口没法做并发、没法做超时、
@@ -195,6 +196,15 @@ provider 自己**不记账**，它只报告"我花了多少"，由 `Store` 统�
 参考图是白底证件照，不说清楚，模型会把白背景、站姿、正面构图、
 影棚光一起搬进分镜画面。
 
+**9. 契约由骨架验，不靠适配器自觉**
+口型同步（`stage06_lipsync.py`）有两条硬契约：输出不能带音轨（否则每句台词
+说两遍）、输出时长必须等于输入片段（否则 `stage07_concat` 按片段实际时长
+累加的音画时间轴会整体错位，而且不报错）。这种事**不能写在文档里就算了** ——
+骨架先让 provider 写到临时文件，用 ffprobe 量完对得上才原子替换成正式产物。
+`tests/test_lipsync.py` 里有两个故意写坏的 provider 来证明它真的会拒收。
+同一个理由，`config/qc_rules.yaml` 里不认识的键会**报错**而不是忽略，
+`config/models.yaml` 里重复的键也是 —— "改了配置没生效"是最难发现的一类问题。
+
 ---
 
 ## 换厂商：只改一行
@@ -216,6 +226,7 @@ AI_DRAMA_IMAGE=dryrun
 AI_DRAMA_VIDEO=dryrun
 AI_DRAMA_AUDIO=dryrun
 AI_DRAMA_T2I=dryrun       # 定妆照。写 none 才跳过（跳过 = 参考锁定整段失效）
+AI_DRAMA_LIPSYNC=dryrun   # 口型同步。none = 不做（成片嘴型不对齐，报告里会说）
 ```
 
 ### 接一个真厂商要写多少
@@ -235,7 +246,7 @@ class MyVideo(VideoProvider):
 
 大约 30–60 行。**不用碰 pipeline、不用碰 stages、不用碰 store。**
 
-三个必须遵守的约定：
+四个必须遵守的约定：
 - 错误统一抛 `ProviderError(msg, retryable=True/False)`。
   网络抖动/429/5xx 标 `retryable=True`；参数非法/内容违规标 `False`。
   重试逻辑骨架已经写好了（指数退避 + 尊重 `retryable`）。
@@ -247,7 +258,7 @@ class MyVideo(VideoProvider):
   `AI_DRAMA_<PROVIDER>_API_KEY` / `AI_DRAMA_<PROVIDER>_BASE_URL`。
   见 `.env.example`。
 
-第四个建议遵守的（做对了省很多调试时间）：**声明能力上限，别猜**。
+**声明能力上限，别猜**。
 给 provider 类加一行 `caps = ProviderCaps(max_duration=8.0, ...)`，
 或者写进 `config/models.yaml`；骨架会据此拆段，而不是把 15 秒喂给
 一个上限 8 秒的模型然后拿到一段被截断的片子。
@@ -305,24 +316,25 @@ python -m pytest
 ```
 
 （`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
-就行。加 `-q` 会只剩进度点、看不到 `149 passed` 那行汇总。）
+就行。加 `-q` 会只剩进度点、看不到 `173 passed` 那行汇总。）
 
-覆盖范围（159 个用例）：
+覆盖范围（173 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
 | `test_models.py` | 时长推导（台词主导）、Episode 序列化往返、**阶段顺序即契约** |
 | `test_store.py` | SQLite 惰性建库、run 生命周期、逐镜落盘、`sync_shots` 幂等、成本按 provider/阶段聚合、**预算闸门抛异常而不是降级** |
-| `test_providers.py` | 默认是 dryrun（零 key 可跑）、未知 provider 明确报错、五个 ABC 的接口一致性、`submit→poll→fetch` 契约、**重试能恢复**、**retryable=False 不重试**、预算异常不可重试 |
+| `test_providers.py` | 默认是 dryrun（零 key 可跑）、未知 provider 明确报错、六种形态的接口一致性、`submit→poll→fetch` 契约、**重试能恢复**、**retryable=False 不重试**、预算异常不可重试 |
 | `test_pipeline.py` | 全流程产出可播放成片、**第二次跑零成本且幂等**、**中断后 resume 只补缺的**、失败会被大声报出来 |
 | `test_caps.py` | 能力声明缺失时**不限制**（fail-open）、超上限**均分拆段**、总和一秒不丢、provider **拒绝**超限请求而不是静默截断 |
-| `test_catalog.py` | 零依赖 YAML 子集（引号内 `#`、并列列表、缩进错误带行号报错）、模型目录往返、**不认识的字段报错**、目录缺失时降级但说明原因 |
+| `test_catalog.py` | 零依赖 YAML 子集（引号内 `#`、并列列表、**重复键报错**、缩进错误带行号报错）、模型目录往返、**不认识的字段报错**、目录缺失时降级但说明原因 |
 | `test_qc.py` | **三态判定**（没查成 ≠ 通过、检查器自身崩溃也算没查成）、时长/对白/重复/景别/钩子规则、**规则作用域**、不认识的配置键抛错 |
 | `test_skills.py` | frontmatter 契约、作用域预筛、正文超预算不静默砍、冲突时写明谁优先、七篇自带技能全部可加载 |
 | `test_identity.py` | 参考锁定段的编号与顺序、`NOT_INHERIT` 排除资产图版式、重生成提示**幂等**、判定解析（最低分门槛、`unchecked` 不说成通过） |
 | `test_faces.py` | 基准排序（用户钉的 > 参考图包 > 散落产物）、自动定的三个条件、**定不了就停下来问人**、`朱锦`/`朱锦娘` 的名字包含边界 |
 | `test_storyboard.py` | 出镜角色按出现位置排序、只对有参考图的角色点名、锁定段在提示词开头、**拥挤镜头被报出来而不是假装锁住** |
 | `test_cli.py` | `doctor` 报的 provider **就是流水线真会用的那个**、配错名字当场报阻断、`.env` 真的会被读、`--help` 里一个子命令都不少 |
+| `test_lipsync.py` | 只送有台词的镜头、输出**无音轨**且时长不变、**两个故意写坏的 provider 被骨架拒收**、已有产物不重复付费、没配 provider 时大声报出来、拼接优先用同步后的片段、`require_lipsync` 开关 |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
 而不是失败 —— 环境缺失不该被误报成代码缺陷。
@@ -331,17 +343,19 @@ python -m pytest
 
 ## 路线图
 
-- [x] 七阶段可恢复流水线 + 成本记账 + 预算闸门
+- [x] 八阶段可恢复流水线 + 成本记账 + 预算闸门
 - [x] dryrun provider（零成本端到端）
 - [x] **能力上限来自声明**：`ProviderCaps` + `config/models.yaml`，超限镜头拆段渲染
-- [x] **质检是必要环节**：`stages/stage07_qc.py` + `config/qc_rules.yaml`，
+- [x] **质检是必要环节**：`stages/stage08_qc.py` + `config/qc_rules.yaml`，
       三态判定（通过 / 不通过 / **没查成**），严格模式下非 PASS 的 run 不算完成
 - [x] **参考图在提示词里点名**：`core/identity.py` 的参考锁定段 + 排除资产图版式
 - [x] **多张脸谁当准**：`core/faces.py` + `python run.py faces`（纯函数层，可离线测）
+- [x] **口型同步**：`stages/stage06_lipsync.py` + `LipSyncProvider`（第六种形态）。
+      骨架强校验两条契约（无音轨、时长不变），坏适配器会被拒收而不是悄悄毁掉时间轴。
+      默认 `dryrun` 只做无音轨重编码并自陈"没有真的改嘴型"；要真出效果按
+      [adding-a-provider.md](docs/adding-a-provider.md) 接一家（sync.so / latentsync 之类）
 - [ ] **一致性校验接上视觉模型**：判定逻辑与三态语义已经写好
       （`core/identity.py`），缺的是"调模型 + 比对关键帧"那一层，属于 provider 层
-- [ ] **口型同步**（当前缺失）——
-      需要先有人脸关键点或音频驱动的模型，属于 provider 层的新抽象
 - [ ] **出镜角色由模型显式给出**：现在靠名字子串匹配，
       多角色同框时会失效（见 `docs/architecture.md` 的已知薄弱点）
 - [ ] 音效层（现在只有台词和 BGM）

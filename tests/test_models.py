@@ -72,6 +72,11 @@ def test_episode_roundtrip_preserves_everything():
 def test_stage_order_is_the_contract():
     """阶段顺序就是流水线的契约，改它等于改产品。
 
-    单独断言一次，避免有人"顺手"调换 05 和 06 —— 那样语音就永远对不上画面。
+    单独断言一次，避免有人"顺手"调换顺序 —— 那样语音就永远对不上画面。
+
+    lipsync 的位置尤其要紧：必须在 audio 之后（要先有音轨才能对嘴）、
+    concat 之前（拼接要用对完嘴的片段）。放错一边不会报错，
+    只是成片永远对不上嘴。
     """
-    assert STAGES == ["script", "storyboard", "frames", "video", "audio", "concat", "qc"]
+    assert STAGES == ["script", "storyboard", "frames", "video", "audio",
+                      "lipsync", "concat", "qc"]

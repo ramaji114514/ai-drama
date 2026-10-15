@@ -86,3 +86,17 @@ severity_auditory: block
 require_assets: true
 # 素材缺失让成片根本拼不出来，必须拦。
 severity_assets: block
+
+# ———————————————————————————————————————— 口型同步
+# 默认**关**。口型同步是可选增强（没配 provider 时整个阶段会被跳过），
+# 默认打开会让所有还没接 lip-sync 的人一上来就 fail。
+#
+# 打开之后，"有台词的镜头没有同步产物"就不再只是一条 note，而是拦住 done。
+# 它查的是**产物在不在**，不是 provider 报没报成功 —— 报告可以是假的，
+# 磁盘上一份 shot_XXX_synced.mp4 假不了。
+require_lipsync: false
+severity_lipsync: block
+# 允许有多大比例的有台词镜头缺同步产物。
+# 0 = 一个都不能少（配 require_lipsync: true 用最严的那档）。
+lipsync_missing_ratio: 0
+

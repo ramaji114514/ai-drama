@@ -220,6 +220,15 @@ def parse(text: str, *, source: str = "配置文件") -> Dict[str, Any]:
             container[key] = _PENDING
             stack.append(_Frame(indent, container, key))
         else:
+            if key in container:
+                # 重复键必须报错。静默让后一个覆盖前一个，表现就是
+                # "我改了配置但没生效" —— 而且是在几千行配置里找一个
+                # 重名的键。刚才给 models.yaml 加 lipsync 条目时就差点
+                # 用 `dryrun` 覆盖掉同名的视频条目。
+                raise ParseError(
+                    f"{source} 第 {lineno} 行：键 `{key}` 重复了。"
+                    f"同一层级里后写的会静默盖掉先写的 —— 请合并成一条。"
+                )
             container[key] = _scalar(value, lineno, source)
 
     # 光有键、没有任何子项 -> 空映射（不是 None，省得调用方到处判空）

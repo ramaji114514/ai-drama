@@ -21,7 +21,7 @@ from ai_drama.core import paths
 from ai_drama.core.pipeline import Pipeline
 from ai_drama.core.store import Store
 from ai_drama.providers import registry
-from ai_drama.stages.stage06_concat import probe_duration
+from ai_drama.stages.stage07_concat import probe_duration
 
 
 def _pipeline(root: Path) -> tuple[Pipeline, Store]:

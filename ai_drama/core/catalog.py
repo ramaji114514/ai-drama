@@ -40,7 +40,7 @@ __all__ = [
 TIERS = ("quality", "balanced", "fast")
 
 #: 形态。
-KINDS = ("text", "image", "video", "audio", "t2i")
+KINDS = ("text", "image", "video", "audio", "t2i", "lipsync")
 
 
 def catalog_path(root: Path) -> Path:

@@ -1,4 +1,4 @@
-"""阶段 6：拼接 + 混音。
+"""阶段 7：拼接 + 混音。
 
 两件确定性的事，都该由代码而不是模型来做：
 
@@ -13,6 +13,10 @@
      得到每句台词在全片时间轴上的起点，再用 ffmpeg 的 adelay 把它们铺平，
      最后和画面一起 amix 混流。
 
+素材优先取**口型同步后**的片段（stage06 的产物），没有才退回原始片段 ——
+见 _clip_for()。所以这一阶段也是"lip-sync 有没有真的接上"的最终检验点：
+对完嘴的片段时长若和原来不一致，累加出来的时间轴就会整体错位。
+
 参考项目在这一步的等价代码是 `video_results` 被过滤后
 `enumerate` 下标错位（script2video.py:97-110），会把 video_url 写到错误的镜头上。
 本骨架的规避方式是：**永远按 label 而不是下标寻址**，见 _clip_for()。
@@ -21,7 +25,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -33,28 +36,19 @@ from ..core.models import Shot, now_iso
 _DURATION_CACHE: Dict[str, float] = {}
 
 
-def probe_duration(path: Path) -> float:
-    """用 ffprobe 量真实时长（带缓存）。
+def probe_duration(path: Path) -> Optional[float]:
+    """量真实时长（带缓存）；**量不出来返回 None**。
 
-    为什么不用模型给的 duration：那是"打算拍多久"，
-    而这是"实际渲染出来多久"。音画对齐必须按后者，否则
-    几秒钟的累积误差就会让最后几句台词飘到别的镜头上去。
+    为什么不用模型给的 duration：那是"打算拍多久"，而这是"实际渲染出来多久"。
+    音画对齐必须按后者，否则几秒钟的累积误差就会让最后几句台词飘到别的镜头上去。
+
+    为什么要返回 None 而不是 0.0：这两件事完全不同 —— "0 秒文件"和"量不出来"。
+    合成一个 0.0，调用方就没法把后者报出来，只能静默用别的值顶替。
     """
     key = str(path)
     if key in _DURATION_CACHE:
         return _DURATION_CACHE[key]
-    exe = media.find_ffprobe()
-    if not exe:
-        return 0.0
-    try:
-        out = subprocess.run(
-            [exe, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
-        )
-        dur = max(0.0, float((out.stdout or b"0").decode().strip() or 0))
-    except Exception:                             # noqa: BLE001
-        dur = 0.0
+    dur = media.try_probe_duration(path)
     _DURATION_CACHE[key] = dur
     return dur
 
@@ -62,9 +56,16 @@ def probe_duration(path: Path) -> float:
 def _clip_for(ctx: StageContext, shot: Shot) -> Optional[Path]:
     """按 label 找这个镜头的视频，找不到就去 store 里查。
 
-    注意这里**不用列表下标** — 镜头可能因为失败而缺号，
+    优先用**口型同步后**的片段（stage06 产出），没有才退回原始片段 ——
+    拼接要用对完嘴的那一份。注意这里**不用列表下标**：镜头可能因为失败而缺号，
     按下标取必然错位（这正是参考项目踩的坑）。
     """
+    synced = paths.synced(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
+    if synced.exists() and synced.stat().st_size > 0:
+        return synced
+    if shot.synced and Path(shot.synced).exists():
+        return Path(shot.synced)
+
     dest = paths.clip(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
@@ -96,8 +97,18 @@ def run(ctx: StageContext) -> StageReport:
             if clip:
                 clips.append(clip)
                 used_shots.append(shot)
-                # 时长在这里量一次并缓存，后面音画对齐直接查
-                durations.append(probe_duration(clip) or shot.duration)
+                # 时长在这里量一次并缓存，后面音画对齐直接查。
+                # 量不出来时**如实记一笔**再退回名义时长：静默用 shot.duration
+                # 顶替，会让"这段根本没量"在报告里看不出来（参考项目踩过）。
+                measured = probe_duration(clip)
+                if measured is None:
+                    report.notes.append(
+                        f"[{shot.label}] 量不出片段时长（{clip.name}），"
+                        f"这一镜按名义时长 {shot.duration:.2f}s 排，对齐可能不准"
+                    )
+                    report.failed += 1
+                    measured = shot.duration
+                durations.append(measured)
             else:
                 missing.append(shot.label)
         if missing:

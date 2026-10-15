@@ -83,6 +83,15 @@ def voice(root: Path, run_id: str, scene_id: str, order: int) -> Path:
     return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_audio.wav"
 
 
+def synced(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    """口型同步后的片段。
+
+    和 clip() 分开放是刻意的：原始片段必须留着 —— 换个 lip-sync 模型重跑、
+    或者对比"同步前后"时，你总得有东西可比；直接覆盖原片就没法回头了。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_synced.mp4"
+
+
 def scene_video(root: Path, run_id: str, scene_id: str) -> Path:
     return scene_dir(root, run_id, scene_id) / "scene_video.mp4"
 

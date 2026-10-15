@@ -75,6 +75,10 @@ class Shot:
     keyframe: Optional[str] = None
     video: Optional[str] = None
     audio: Optional[str] = None
+    #: 口型同步后的片段（视频阶段产出的是原始片段，这里是"对上嘴"的那一份）。
+    #: 没有它不代表这一镜不需要同步 —— 也可能只是没配 lip-sync provider。
+    #: 这两件事在报告里必须能分辨，见 stages/stage06_lipsync.py。
+    synced: Optional[str] = None
     error: Optional[str] = None
     updated_at: str = field(default_factory=now_iso)
 
@@ -175,7 +179,10 @@ class Episode:
 # 任务层
 # ————————————————————————————————————————----
 
-STAGES = ["script", "storyboard", "frames", "video", "audio", "concat", "qc"]
+#: 阶段顺序**就是契约**（tests/test_models.py 锁着它）。
+#: lipsync 必须在 audio 之后（要先有音轨才能对嘴）、concat 之前
+#: （拼接要用对完嘴的片段）。
+STAGES = ["script", "storyboard", "frames", "video", "audio", "lipsync", "concat", "qc"]
 
 RUN_STATES = ["pending", "running", "done", "failed", "cancelled"]
 

@@ -38,20 +38,22 @@ defaults:
   image: qwen-image-2.0
   video: dryrun
   audio: cosyvoice
+  lipsync: dryrun
 
 # ———————————————————————————————————————— 模型清单
 #
 # 字段说明：
-#   kind             text / image / video / audio / t2i
+#   kind             text / image / video / audio / t2i / lipsync
 #   provider         由哪个适配器实现（对应 providers/ 里的注册名）
 #   tier             quality / balanced / fast —— 挑模型时的主要依据
 #   cost             1-5 相对档位，用于"这个活了不值得用贵的"这类判断
 #   price            单价（元/张 或 元/段）。**填了才能按金额累计成本，
 #                    不填只能按次数拦。照控制台单价填，别猜。**
-#   price_per_second 视频按秒计价时用这个
+#   price_per_second 视频按秒计价时用这个（lipsync 也是按秒）
 #   max_duration     单次生成的最长秒数。**这是硬上限，不是建议值。**
 #                    镜头比它长会被拆成多段（见 core/media.plan_shot_split），
 #                    而不是静默截断 —— 截断的成片短得没有理由。
+#                    lipsync 的 max_duration 是"单次能对多长的片段"，不是"能生成多长"。
 #   strengths        一句话，会进上下文供挑选模型时判断。写具体点。
 #
 # 价格一律留空。这是骨架，不是价目表；填了就得维护，而不填只是
@@ -198,3 +200,33 @@ models:
     tier: balanced
     cost: 2
     strengths: 中文配音自然，音色库大。快速起量用。
+
+  # —————— 口型同步 ——————
+  #
+  # 这一形态的输入输出都是**片段**：给它一段画面 + 一段配音，它按音素重绘嘴型。
+  # 骨架对它的唯一硬要求是"输出时长必须等于输入"（拼接的时间轴是按片段实际
+  # 时长累加的）。它输出还**不能带音轨** —— 音轨由 concat 统一铺一次。
+  dryrun-lipsync:
+    kind: lipsync
+    provider: dryrun-lipsync
+    tier: fast
+    cost: 1
+    max_duration: 8
+    strengths: 不接任何服务、不花钱。只做无音轨重编码来跑通接线，**不改嘴型**。
+
+  latentsync:
+    kind: lipsync
+    provider: ""
+    tier: balanced
+    cost: 2
+    max_duration: 30
+    strengths: 开源自托管，速度快。适合把整批镜头一次过。
+
+  sync-so:
+    kind: lipsync
+    provider: ""
+    tier: quality
+    cost: 4
+    max_duration: 60
+    strengths: 商业 API，牙齿与舌头细节最稳，按秒计费。关键镜头用。
+

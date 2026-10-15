@@ -276,6 +276,41 @@ class T2IProvider(abc.ABC):
         return {"name": self.name, "kind": self.kind, "ok": True}
 
 
+class LipSyncProvider(abc.ABC):
+    """口型同步：把一段已经渲好的画面，按音轨对上嘴。
+
+    为什么单独一个形态、而不是塞进 VideoProvider：它是**已经出片之后**才做的
+    一步，输入输出都是片段，跟"生成"是两件事。真实厂商里做这件事的
+    （sync.so / latentsync / wav2lip 一类）和做图生视频的通常也不是同一家。
+
+    实现方必须遵守的两条契约（violate 了会静默做出错片）：
+
+      1. **输出不能带音轨**。音轨由 concat 阶段统一铺一次；lip-sync 再塞一条
+         进去，成片里每句台词都会说两遍（一遍原声一遍对齐后的）。
+      2. **输出时长必须等于输入片段时长**。concat 的音画对齐按 ffprobe 量出的
+         **片段实际时长**累加时间轴 —— 这里一改时长，后面所有镜头的声音都会错位。
+         对不上的时候：画面该拉伸/定格就拉伸定格，但长度不能变。
+
+    ``sync`` 拿到 ``audio``（该镜的配音，可能不存在）时，只有确实需要对齐才做事；
+    没有配音的镜头（空镜、纯动作）上游根本不会调这里。
+    """
+
+    name = "lipsync-base"
+    kind = "lipsync"
+
+    @abc.abstractmethod
+    def sync(self, video: Path, audio: Optional[Path], dest: Path, *,
+             shot_label: str = "", scene: str = "") -> Usage:
+        """把 video（+ audio）对齐后写到 dest，返回 usage。
+
+        没有 audio 时（该镜无台词）允许直接把 video 重编码到 dest ——
+        但要如实报告，别假装同步过。
+        """
+
+    def health(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind, "ok": True}
+
+
 class Bundle:
     """一次 run 用到的全部 provider。
 
@@ -290,6 +325,7 @@ class Bundle:
         video: VideoProvider,
         audio: AudioProvider,
         t2i: Optional[T2IProvider] = None,
+        lipsync: Optional[LipSyncProvider] = None,
         catalog: Any = None,
     ):
         self.text = text
@@ -297,13 +333,15 @@ class Bundle:
         self.video = video
         self.audio = audio
         self.t2i = t2i
+        self.lipsync = lipsync
         #: 模型目录（core.catalog.ModelCatalog）。适配器可以拿它查
         #: 「我这个模型的多长上限、参考素材该放哪个字段」。允许为 None ——
         #: 手搓 bundle 跑测试时不该被迫造一份目录。
         self.catalog = catalog
 
     def all_providers(self) -> List[Any]:
-        return [p for p in (self.text, self.image, self.video, self.audio, self.t2i) if p]
+        return [p for p in (self.text, self.image, self.video, self.audio,
+                            self.t2i, self.lipsync) if p]
 
     def report(self) -> List[Dict[str, Any]]:
         out = [p.health() for p in self.all_providers()]
@@ -329,6 +367,7 @@ PRICING: Dict[str, Dict[str, float]] = {
     "video_per_second": {"720p": 0.08, "1080p": 0.20},
     "tts_per_1k_char": {"default": 0.015},
     "music_per_minute": {"default": 0.05},
+    "lipsync_per_second": {"default": 0.02},
 }
 
 

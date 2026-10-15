@@ -3,6 +3,10 @@
 骨架承诺的一件事：**换模型不用改流水线**。这条承诺的完整含义是"只改一个
 文件、几十行代码"，而不是"有个抽象层所以理论上可以换"。这份文档就是那几十行。
 
+六种形态：`text`（写剧本）/ `image`（关键帧）/ `video`（镜头片段）/
+`audio`（配音与 BGM）/ `t2i`（定妆照，可关）/ `lipsync`（口型同步，可关）。
+每种形态一个环境变量，见下面各节。
+
 ## 三步
 
 **1. 复制模板**
@@ -76,6 +80,49 @@ ProviderError(msg, retryable=False)   # 参数非法 / 内容违规 / 余额不�
 `@图片N = 角色「X」本人…` 那段，并且显式排除资产图版式（白背景、站姿、
 正面构图）。参考图列表的顺序必须与提示词里的编号一致 —— 错一位模型不会
 报错，它只会很认真地照着错的那张图渲染。
+
+## 口型同步（第六种形态）
+
+前四种形态是"生成"，`t2i` 是"只出图"，`lipsync` 是**已经出片之后**才做的一步：
+输入一段画面 + 一段配音，输出一段对好嘴的画面。
+
+```python
+from .base import LipSyncProvider, ProviderError
+from .registry import register
+
+
+@register("your_vendor", "lipsync")
+class YourVendorLipSync(LipSyncProvider):
+    name = "your_vendor"
+
+    def sync(self, video, audio, dest, *, shot_label="", scene=""):
+        # 调你的 API，把结果写到 dest
+        ...
+        return {"provider": self.name, "stage": "lipsync", "unit": "second",
+                "amount": 4.0, "money": 0.08}
+```
+
+```powershell
+$env:AI_DRAMA_LIPSYNC="your_vendor"
+```
+
+两条契约**不是建议**，骨架会在 stage06 里逐条验：
+
+| 契约 | 破了会怎样 | 怎么破的 |
+|---|---|---|
+| 输出**不带音轨** | 成片里每句台词说两遍（一遍原声、一遍对齐后的） | 忘了 `-an`，或厂商返回里自带音频 |
+| 输出**时长 == 输入** | 后面**所有**镜头的声音整体错位，而且不报错 | 模型按音频长度重新裁/拉，或你顺手做了 `-shortest` |
+
+时长这一条骨架是这么验的：先让你写到临时文件，ffprobe 量出来对得上（容差 0.12s）
+才原子替换成正式产物。对不上就这一镜算失败、临时文件删掉 ——
+你能单独重跑这一镜，但错误进不了成片。
+
+**没有配音的镜头不会被送来**（空镜、纯动作没有可对的嘴），所以实现里
+不必处理 `audio is None` 之外的奇怪情况。
+
+没配 provider 不算错误：流水线照跑，但阶段报告里会有一条 `[!]`，
+明确写出"N 个有台词的镜头被跳过、成片里嘴型没有对齐"。
+要让这件事变成硬门槛，打开 `config/qc_rules.yaml` 的 `require_lipsync`。
 
 ## 请求字段是配置，不是常量
 

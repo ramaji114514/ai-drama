@@ -68,6 +68,41 @@ def run(cmd: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedProces
     return proc
 
 
+def probe_duration(path: Path, *, timeout: int = 60) -> float:
+    """用 ffprobe 量真实时长；量不出来**抛异常**。
+
+    为什么不用模型给的 duration：那是"打算拍多久"，而这是"实际渲染出来多久"。
+    音画对齐必须按后者，否则几秒钟的累积误差就会让最后几句台词飘到别的镜头上去。
+    """
+    exe = require_ffprobe()
+    proc = subprocess.run(
+        [exe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+    )
+    if proc.returncode != 0:
+        tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-4:]
+        raise RuntimeError("ffprobe failed on %s (exit %s): %s"
+                           % (path, proc.returncode, " / ".join(tail)))
+    raw = (proc.stdout or b"").decode("utf-8", "replace").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        raise RuntimeError("ffprobe 没给出时长（%s 返回 %r）：文件可能还没写完或是坏的" % (path, raw))
+
+
+def try_probe_duration(path: Path) -> Optional[float]:
+    """量不出来时返回 None。
+
+    调用方**必须**把这个 None 当"没量成"处理并上报 —— 静默当成 0 秒或
+    静默跳过，都会让"这段根本没量"这件事在报告里看不出来。
+    """
+    try:
+        return probe_duration(path)
+    except Exception:                              # noqa: BLE001
+        return None
+
+
 def image_to_clip(image: Path, out: Path, *, duration: float, fps: int = 24,
                   size: Tuple[int, int] = (720, 1280)) -> Path:
     """把一张静图变成 duration 秒的视频片段（外加极轻微的推镜，模拟运动）。"""
@@ -150,16 +185,20 @@ def mux_audio(video: Path, audio: Path, out: Path, *, fade_out: float = 0.5) -> 
 
 
 def write_wav(path: Path, *, seconds: float, freq: float = 220.0,
-              sample_rate: int = 44100, silent: bool = True) -> Path:
+              sample_rate: int = 44100, silent: bool = True,
+              amp: int = 7000) -> Path:
     """生成一段 WAV。
 
-    dryrun 用它产出"占位音轨"，形状完全正确（时长、声道、采样率），
-    只是内容是静音或极轻的正弦音 — 这样音画对齐逻辑可以被真实验证。
+    dryrun 用它产出"占位音轨"，形状完全正确（时长、声道、采样率），内容是一声
+    带淡入淡出的正弦音 — 这样"音画对齐"能被真的验证：放成片时你能听出每句台词
+    落在时间轴的哪里。静音只能验证"有个文件"，验证不了对齐。
+
+    ``amp`` 默认 7000（约 -13 dBFS）：明显能听见，又不至于盖过别的音轨。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     n = int(seconds * sample_rate)
     frames = bytearray()
-    amp = 0 if silent else 1200
+    amp = 0 if silent else max(0, min(32767, int(amp)))
     for i in range(n):
         # 淡入淡出，避免爆音
         env = min(1.0, i / (sample_rate * 0.05), (n - i) / (sample_rate * 0.05))

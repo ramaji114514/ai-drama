@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .core import media, paths
+from .core.catalog import KINDS
 from .core.faces import (
     FaceAudit,
     FaceCandidate,
@@ -145,24 +146,32 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # t2i 的默认值写成"未配置，定妆照会跳过"，而 build_bundle 早就默认 dryrun
     # 了 —— doctor 说一套、流水线做另一套，正是本项目要消灭的那类失败。
     print("\nprovider 配置（环境变量 -> 实际使用）:")
-    for kind in ("text", "image", "video", "audio", "t2i"):
+    for kind in registry.KIND_ENV:
         env_key = registry.kind_env(kind)
         raw = os.environ.get(env_key)
         setting = f"{env_key} 未设置" if raw is None else f"{env_key}={raw}"
         name = registry.effective_name(kind)
+        optional = kind in registry.OPTIONAL_KINDS
         if not name:
-            tail = "已关闭" if kind == "t2i" else "已关闭 —— 但这个形态是必须的"
-            if kind != "t2i":
+            if optional:
+                # 可选形态被显式关掉是合法的，但**后果要说清楚** ——
+                # "定妆照跳过"和"嘴型没对上"都不是能从别处看出来的事。
+                why = {
+                    "t2i": "定妆照会被跳过，参考锁定会整段失效",
+                    "lipsync": "成片里嘴型不会对齐",
+                }.get(kind, "这一步会被跳过")
+                print(f"  [!] {kind:<7} {setting} -> 已关闭（可选形态）  —— {why}")
+            else:
                 ok = False
-            print(f"  [{'!' if kind == 't2i' else 'X'}] {kind:<6} {setting} -> {tail}")
+                print(f"  [X] {kind:<7} {setting} -> 已关闭 —— 但这个形态是必须的")
             continue
         if name in registry._REGISTRY[kind]:
-            extra = "（关掉它写 none）" if kind == "t2i" and raw is None else ""
-            print(f"  [OK] {kind:<6} {setting} -> {name}{extra}")
+            extra = "（默认值；关掉它写 none）" if optional and raw is None else ""
+            print(f"  [OK] {kind:<7} {setting} -> {name}{extra}")
         else:
             ok = False
             avail = ", ".join(sorted(registry._REGISTRY[kind])) or "（一个都没有）"
-            print(f"  [X] {kind:<6} {setting} -> 没注册过这个名字。可用：{avail}")
+            print(f"  [X] {kind:<7} {setting} -> 没注册过这个名字。可用：{avail}")
 
     print(f"\n数据库  {default_db_path()}")
     print(f"skills  {SKILLS_DIR}  ({'存在' if SKILLS_DIR.exists() else '缺失'})")
@@ -473,12 +482,12 @@ def cmd_models(args: argparse.Namespace) -> int:
     print(f"  实际送出的图片字段：{', '.join(rf.image_field_names())}")
 
     print("\n形态默认：")
-    for kind in ("text", "image", "video", "audio", "t2i"):
+    for kind in KINDS:
         entry = catalog.default_model(kind)
         if entry is None:
             continue
         mark = "" if catalog.defaults.get(kind) else "（目录没配，取最便宜的）"
-        print(f"  {kind:<6} {entry.id} {mark}")
+        print(f"  {kind:<7} {entry.id} {mark}")
 
     kind = getattr(args, "kind", None)
     print(f"\n模型清单{('（' + kind + '）') if kind else ''}：")
@@ -696,7 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("models", help="看模型目录、能力上限与参考素材字段")
     add_common(sp)
-    sp.add_argument("--kind", help="只看某一形态：text / image / video / audio / t2i")
+    sp.add_argument("--kind", help="只看某一形态：" + " / ".join(KINDS))
     sp.add_argument("--json", action="store_true", help="附完整目录 JSON")
     sp.set_defaults(func=cmd_models)
 

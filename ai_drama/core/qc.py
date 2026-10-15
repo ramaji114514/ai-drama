@@ -179,6 +179,16 @@ class QcRules:
     require_assets: bool = True
     severity_assets: Severity = Severity.BLOCK
 
+    #: 有台词的镜头必须真的做过口型同步。
+    #: **默认关**：口型同步是可选增强（`AI_DRAMA_LIPSYNC=none` 时整个阶段会被
+    #: 跳过），默认打开会让所有没配 provider 的人一上来就 fail。
+    #: 打开它之后，"嘴型没对上"就不再只是一条 note，而是拦住 done。
+    require_lipsync: bool = False
+    severity_lipsync: Severity = Severity.BLOCK
+    #: 有台词但没同步的镜头超过这个比例就报（配合 require_lipsync 用）。
+    #: 想严格到"一个都不能少"就把 require_lipsync 打开、这里设 0。
+    lipsync_missing_ratio: float = 0.0
+
     @classmethod
     def load(cls, path: Optional[Path]) -> "QcRules":
         """从 YAML 读规则；文件不存在或读不动就退回默认值（并保留原因）。
@@ -203,7 +213,7 @@ class QcRules:
             kwargs[key] = value
         for sev_key in ("severity_dialogue", "severity_duration", "severity_duplicate",
                         "severity_framing", "severity_hook", "severity_auditory",
-                        "severity_assets"):
+                        "severity_assets", "severity_lipsync"):
             if sev_key in kwargs and not isinstance(kwargs[sev_key], Severity):
                 kwargs[sev_key] = Severity(str(kwargs[sev_key]))
         for tup_key in ("applies_to", "stages", "forbidden_in_visual"):
@@ -527,6 +537,45 @@ class QcChecker:
                 ))
         return out
 
+    def _check_lipsync(self, shots: Sequence[Any]) -> List[Finding]:
+        """有台词的镜头是不是真的对过嘴。
+
+        默认不查（`require_lipsync` 关着）—— 口型同步是可选增强，
+        没配 provider 时整个阶段会被跳过，默认打开会让所有人都 fail。
+
+        打开之后判断的是**产物在不在**，而不是"provider 报没报成功"：
+        报告可以是假的，磁盘上一份 `shot_XXX_synced.mp4` 假不了。
+        """
+        r = self.rules
+        if not r.require_lipsync:
+            return []
+        talking = [s for s in shots if (getattr(s, "dialogue", "") or "").strip()]
+        if not talking:
+            return []
+        missing: List[str] = []
+        for s in talking:
+            raw = getattr(s, "synced", None)
+            ok = False
+            if raw:
+                try:
+                    p = Path(raw)
+                    ok = p.exists() and p.stat().st_size > 0
+                except OSError:
+                    ok = False
+            if not ok:
+                missing.append(_where(s))
+        if len(missing) / len(talking) <= r.lipsync_missing_ratio:
+            return []
+        return [Finding(
+            rule="lipsync-present", severity=r.severity_lipsync,
+            message=f"{len(missing)}/{len(talking)} 个有台词的镜头没有口型同步产物",
+            where="整片",
+            detail="，".join(missing[:20]),
+            suggestion="接上 lip-sync provider（AI_DRAMA_LIPSYNC）后跑 "
+                       "`run.py resume <run_id> --stages lipsync,concat`；"
+                       "或者把 config/qc_rules.yaml 的 require_lipsync 关掉",
+        )]
+
     def _check_assets(self, shots: Sequence[Any]) -> Tuple[List[Finding], bool]:
         """素材完整性。返回值第二项是"到底查成了没有"。"""
         if self.assets is None:
@@ -584,6 +633,7 @@ class QcChecker:
             report.findings += self._check_framing(scenes)
             report.findings += self._check_hook(scenes)
             report.findings += self._check_auditory(shots)
+            report.findings += self._check_lipsync(shots)
             if self.rules.require_assets:
                 asset_findings, checked = self._check_assets(shots)
                 report.findings += asset_findings

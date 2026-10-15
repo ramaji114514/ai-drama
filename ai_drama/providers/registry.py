@@ -19,7 +19,15 @@ import importlib
 import os
 from typing import Any, Callable, Dict, List
 
-from .base import AudioProvider, Bundle, ImageProvider, T2IProvider, TextProvider, VideoProvider
+from .base import (
+    AudioProvider,
+    Bundle,
+    ImageProvider,
+    LipSyncProvider,
+    T2IProvider,
+    TextProvider,
+    VideoProvider,
+)
 
 _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
     "text": {},
@@ -27,6 +35,7 @@ _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
     "video": {},
     "audio": {},
     "t2i": {},
+    "lipsync": {},
 }
 
 #: 每个形态由哪个环境变量决定。``doctor`` 与 ``build_bundle`` 共用这一份。
@@ -36,13 +45,19 @@ KIND_ENV: Dict[str, str] = {
     "video": "AI_DRAMA_VIDEO",
     "audio": "AI_DRAMA_AUDIO",
     "t2i": "AI_DRAMA_T2I",
+    "lipsync": "AI_DRAMA_LIPSYNC",
 }
 
 #: 环境变量没设时用的 provider。
 DEFAULT_PROVIDER = "dryrun"
 
-#: 写这些值表示"我明确不要这个形态"。只有 ``t2i`` 有意义 —— 另外四个是必须的。
+#: 写这些值表示"我明确不要这个形态"。
+#: 只有 ``t2i`` 与 ``lipsync`` 关掉是有意义的 —— 另外四个是必须的。
 _OFF_VALUES = ("", "none", "off", "null", "0", "false", "no")
+
+#: 允许被显式关掉的形态。``lipsync`` 是可选增强（不配就是没有口型同步），
+#: 它在流水线里缺席时会被如实报出来，而不是静默跳过。
+OPTIONAL_KINDS = ("t2i", "lipsync")
 
 
 def kind_env(kind: str) -> str:
@@ -119,17 +134,17 @@ def build_bundle(**overrides: Any) -> Bundle:
     冒出被静默截断的成片。
     """
     made: Dict[str, Any] = {}
-    for kind in ("text", "image", "video", "audio", "t2i"):
+    for kind in ("text", "image", "video", "audio", "t2i", "lipsync"):
         override = overrides.get(kind)
         if override is not None:
             made[kind] = override
             continue
         name = effective_name(kind)
         if not name:
-            # 显式关闭。t2i 关掉是合法的（只跑分镜、不要定妆照），另外四个
-            # 关掉没有意义 —— 与其让 create("text", "") 抛一个看不懂的 KeyError，
-            # 不如直接说清楚。
-            if kind == "t2i":
+            # 显式关闭。t2i / lipsync 关掉是合法的（只跑分镜不要定妆照；
+            # 或者先不做口型同步），另外四个关掉没有意义 —— 与其让
+            # create(kind, "") 抛一个看不懂的 KeyError，不如直接说清楚。
+            if kind in OPTIONAL_KINDS:
                 made[kind] = None
                 continue
             raise ValueError(
@@ -140,7 +155,7 @@ def build_bundle(**overrides: Any) -> Bundle:
 
     bundle = Bundle(
         text=made["text"], image=made["image"], video=made["video"],
-        audio=made["audio"], t2i=made["t2i"],
+        audio=made["audio"], t2i=made["t2i"], lipsync=made["lipsync"],
     )
     catalog = overrides.get("catalog")
     if catalog is None:
@@ -189,6 +204,7 @@ def _apply_catalog_caps(bundle: Bundle, catalog: Any) -> None:
 
 __all__ = [
     "register", "available", "create", "build_bundle",
-    "kind_env", "effective_name", "KIND_ENV", "DEFAULT_PROVIDER",
-    "TextProvider", "ImageProvider", "VideoProvider", "AudioProvider", "T2IProvider",
+    "kind_env", "effective_name", "KIND_ENV", "DEFAULT_PROVIDER", "OPTIONAL_KINDS",
+    "TextProvider", "ImageProvider", "VideoProvider", "AudioProvider",
+    "T2IProvider", "LipSyncProvider",
 ]

@@ -30,6 +30,7 @@ from .base import (
     PRICING,
     AudioProvider,
     ImageProvider,
+    LipSyncProvider,
     ProviderCaps,
     ProviderError,
     T2IProvider,
@@ -497,15 +498,20 @@ class DryRunVideoProvider(VideoProvider):
 
 @register("dryrun", "audio")
 class DryRunAudioProvider(AudioProvider):
-    """占位音轨：形状正确（时长/采样率/单声道），内容是静音。
+    """占位音轨：形状正确（时长/采样率/单声道），内容是**一声短促的音**。
 
     这样"音画对齐"和"拼接"逻辑可以被真实跑通，而不需要先解决 TTS。
     接真 TTS 时只换这一个类。
+
+    台词**故意做成有声的**：一声 196 Hz 的短音，你放成片时能直接听出每句台词
+    落在时间轴的哪个位置 —— 这是骨架里唯一能验证"音画对齐对不对"的手段
+    （静音的占位音轨把这件事变成了看不见的）。BGM 仍然是静音：一段循环的哔声
+    没有验证价值，只会盖住台词。
     """
 
     name = "dryrun-audio"
 
-    def __init__(self, silent: bool = True):
+    def __init__(self, silent: bool = False):
         self.silent = silent
 
     def _duration_of(self, text: str) -> float:
@@ -524,7 +530,7 @@ class DryRunAudioProvider(AudioProvider):
             "provider": self.name,
             "stage": "audio",
             "shot_label": shot_label,
-            "note": "[dryrun] 静音占位音轨",
+            "note": "[dryrun] 占位音轨（一声短音，不是真语音；用来听台词落在哪）",
         }
 
     def music(self, path: Path, *, duration: float, mood: str = "") -> Dict[str, Any]:
@@ -537,4 +543,66 @@ class DryRunAudioProvider(AudioProvider):
             "provider": self.name,
             "stage": "audio",
             "note": "[dryrun] 静音占位 BGM",
+        }
+
+
+@register("dryrun", "lipsync")
+class DryRunLipSyncProvider(LipSyncProvider):
+    """占位口型同步：**不做任何视觉伪造**，只把片段重编码成契约要求的形态。
+
+    真厂商做的事（按音素重绘嘴型）这里一件都没做。它产出的是"格式正确的错东西"，
+    存在的意义是让 stage06 的接线、产物路径、时长契约、失败重跑逻辑都能被真实
+    跑通 —— 而不是让成片看起来对上了嘴。
+
+    **刻意没做可视化**（画个波形条、印个"已同步"）。试过：波形在低音量素材上
+    画出来就是一条看不见的线（`showwaves` 对 ±1199/32767 的正弦只出 251 个
+    非黑像素），而配 `apad` 凑长度会让 ffmpeg 永不终止。更重要的是，一个
+    看起来"同步过了"的假标记比什么都不做更糟 —— 它会让人不再去看报告里的
+    `[dryrun]` 字样。
+    """
+
+    name = "dryrun-lipsync"
+
+    #: 时长容差：重编码前后的差超过这个值就报错。
+    DURATION_TOLERANCE = 0.12
+
+    def sync(self, video: Path, audio: Optional[Path], dest: Path, *,
+             shot_label: str = "", scene: str = "") -> Dict[str, Any]:
+        ff = media.require_ffmpeg()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        before = media.try_probe_duration(video)
+        if before is None:
+            raise ProviderError(
+                f"量不出输入片段的时长，没法保证同步后时长不变：{video}",
+                retryable=False, provider=self.name,
+            )
+
+        # 直接写 dest：原子替换由 stage06 负责（它会先给一个临时路径，
+        # 量完时长对得上才挪成正式产物）。provider 再套一层临时文件没有意义。
+        media.run([
+            ff, "-y", "-i", str(video),
+            "-an",                       # 契约 1：输出不带音轨（音轨由 concat 统一铺）
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(dest),
+        ])
+        after = media.try_probe_duration(dest)
+        if after is None or abs(after - before) > self.DURATION_TOLERANCE:
+            # 骨架那边还会再验一次；这里先炸掉，省得把坏产物交出去。
+            dest.unlink(missing_ok=True)
+            raise ProviderError(
+                f"重编码后时长对不上（{before:.3f}s -> {after!r}s）",
+                retryable=False, provider=self.name,
+            )
+
+        heard = "有配音，但**没有**做音素对齐" if audio and Path(audio).exists() else "这一镜本来就没有台词"
+        return {
+            "unit": "second",
+            "amount": round(before, 3),
+            "money": round(before * PRICING["lipsync_per_second"]["default"], 6),
+            "provider": self.name,
+            "stage": "lipsync",
+            "shot_label": shot_label,
+            "note": f"[dryrun] 没有真的改嘴型（{heard}）：只做了无音轨重编码，时长保持 {before:.3f}s",
         }

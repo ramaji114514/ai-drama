@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS shots (
     keyframe    TEXT,
     video       TEXT,
     audio       TEXT,
+    synced      TEXT,
     error       TEXT,
     updated_at  TEXT NOT NULL
 );
@@ -77,6 +78,14 @@ CREATE INDEX IF NOT EXISTS idx_costs_run ON costs(run_id);
 class Store:
     """线程安全的 SQLite 封装（视频/关键帧阶段会并发调用）。"""
 
+    #: 后加的列。老库（已经跑过几次的 runs/ai_drama.sqlite3）用 ALTER TABLE 补上 ——
+    #: 否则升级后第一件事就是 `no such column: synced`，而且是在跑到一半的时候炸。
+    #: 只做"加列"这一种迁移：可逆、不丢数据。改类型、删列必须显式写迁移脚本，
+    #: 不能在这里偷偷做。
+    _ADDED_COLUMNS = (
+        ("shots", "synced", "TEXT"),
+    )
+
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +96,15 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """把老库补齐到当前 schema。调用方已持有锁。"""
+        for table, column, decl in self._ADDED_COLUMNS:
+            have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -225,9 +242,10 @@ class Store:
     def pending_shots(self, run_id: str, stage_field: str) -> List[Dict[str, Any]]:
         """返回某个阶段还需要处理的镜头。
 
-        stage_field 只能是 keyframe / video / audio — 白名单校验，避免 SQL 注入。
+        stage_field 只能是 keyframe / video / audio / synced — 白名单校验，
+        避免 SQL 注入。
         """
-        if stage_field not in ("keyframe", "video", "audio"):
+        if stage_field not in ("keyframe", "video", "audio", "synced"):
             raise ValueError(f"bad stage_field: {stage_field}")
         with self._lock:
             rows = self._conn.execute(
