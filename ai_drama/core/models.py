@@ -80,6 +80,17 @@ class Shot:
     #: 这两件事在报告里必须能分辨，见 stages/stage06_lipsync.py。
     synced: Optional[str] = None
     error: Optional[str] = None
+    #: 这一镜**出镜的角色名**，由分镜阶段的模型显式给出，顺序即"谁在画面里更重要"。
+    #:
+    #: 为什么不让骨架从文本里猜：名字子串匹配是已知的薄弱点 —— `朱锦` 会匹配到
+    #: `朱锦娘`（core/faces.py 里为此写了特判），而多角色同框时"谁的脸算基准"
+    #: 立刻失效。更要紧的是**猜错不会报错**：它只会让人在成片里看到一张陌生的脸。
+    #:
+    #: 三种取值要分清楚，合并成一种就会丢掉一个真实状态：
+    #:   * ``None`` —— 没声明（旧 episode.json，或模型漏了这个字段）-> 退回名字猜测
+    #:   * ``[]``   —— 声明了"画面里没有人"（空镜）-> 谁都不锁，也不许退回去猜
+    #:   * 有名字   —— 按这个顺序锁脸
+    characters: Optional[List[str]] = None
     updated_at: str = field(default_factory=now_iso)
 
     @property

@@ -51,20 +51,15 @@ CAMERA_MOVE = {
 NEGATIVE = "文字, 字幕, 水印, 畸形手指, 多手多脚, 面部崩坏, 低分辨率, 模糊"
 
 
-def characters_in_shot(ep, shot: Shot) -> List[Character]:
-    """找出镜头里出现的**全部**角色，按在镜头文本里出现的位置排序。
+def characters_by_text(ep, shot: Shot) -> List[Character]:
+    """**猜**这一镜有谁：在镜头文本里找角色名的子串。
 
-    两处刻意设计：
+    [!] 这是已知的薄弱点（参考项目就是这么做的，多角色场景立即失效），
+    现在只作为**退路**用：
 
-    1. 排序看"谁先被提到"，不看角色表的排列 —— 参考锁定段里的
-       `@图片1` 必须对应真正传给模型的那张图，而"这张戏是谁的"
-       应当由剧本决定。
-    2. 名字匹配复用 `core.faces.matches_character`，它处理了
-       `朱锦` 与 `朱锦娘` 这种包含关系（否则娘的脸会当成锦的基准）。
-
-    [!] 名字子串匹配仍然是**已知的薄弱点**（参考项目就是这么做的，
-    多角色场景立即失效）。要真正做多角色一致性，得让分镜阶段的模型
-    显式输出 `shot.characters = [name, ...]`，再用脸/姿态检测回归验证。
+      * 分镜阶段显式给了 `shot.characters` -> 用那个，见 declared_characters()
+      * 没给（旧 episode.json、或模型漏了这个字段）-> 才退到这里，
+        stage02 会把"靠猜"的镜数报出来，不会让它悄悄发生。
     """
     blob = f"{shot.action} {shot.dialogue}"
     names = [c.name for c in ep.characters if c.name]
@@ -73,6 +68,65 @@ def characters_in_shot(ep, shot: Shot) -> List[Character]:
         if c.name and matches_character(blob, c.name, names):
             hits.append((blob.find(c.name), c))
     return [c for _, c in sorted(hits, key=lambda t: t[0])]
+
+
+def declared_characters(ep, shot: Shot):
+    """解析 `shot.characters`。返回 (命中的角色, 不认识的名单)。
+
+    不认识的名单**必须报出来**：模型写错一个名字（"苏曼" vs "苏蔓"），
+    这一镜就锁不住脸，而它不会报错 —— 只会让人看到一张陌生的脸。
+
+    注意 `characters is None`（没声明）和 `[]`（声明"画面里没人"）是两回事，
+    只有前者才返回空并让调用方退回去猜。
+    """
+    if shot.characters is None:
+        return [], []
+    known = {c.name: c for c in ep.characters if c.name}
+    found, unknown = [], []
+    for name in shot.characters:
+        c = known.get(name)
+        if c is None:
+            unknown.append(name)
+        elif c not in found:
+            found.append(c)
+    return found, unknown
+
+
+def characters_in_shot(ep, shot: Shot) -> List[Character]:
+    """找出镜头里出现的**全部**角色，按"谁更重要"排序。
+
+    三处刻意设计：
+
+    1. **显式声明优先。** 分镜阶段给了 `shot.characters` 就用它，顺序即模型
+       排定的重要性 —— "这张戏是谁的"应当由剧本决定，不由字符串查找决定。
+       声明为空数组时结果是空的：**空镜就是空镜**，不许退回去猜，
+       否则"我声明了画面里没人"这句话就没有意义了。
+    2. 真的没声明（旧 episode.json、模型漏字段）才退回名字子串匹配，
+       并且复用 `core.faces.matches_character`，它处理了 `朱锦` 与 `朱锦娘`
+       这种包含关系（否则娘的脸会当成锦的基准）。stage02 会把"靠猜"的镜数报出来。
+    3. 返回值里只含**在册角色**：模型点了一个不在卡司里的名字，那一镜就没有
+       参考图，但这件事会在 stage02 的报告里被点名，不会静默。
+
+    [!] 余下的薄弱点：`shot.characters` 里仍然按**名字**匹配角色。同名不同人、
+    改名、多重身份（卧底）还是会错配 —— 要做扎实得给角色稳定 id。
+    """
+    if shot.characters is not None:
+        return declared_characters(ep, shot)[0]
+    return characters_by_text(ep, shot)
+
+
+def characters_on_screen(ep, shot: Shot) -> List[Character]:
+    """**可能**出现在画面里的所有角色：声明与文本推断的并集。
+
+    为什么要并集而不是只用声明：`max_ref_images` 的拥挤告警必须建立在
+    "这一镜到底有几个人"上。模型少声明一个人（很常见），如果告警也跟着变少，
+    那这条告警就变成了"只要模型不写就永远不报警"——比没有还糟。
+    """
+    out = list(characters_in_shot(ep, shot))
+    for c in characters_by_text(ep, shot):
+        if c not in out:
+            out.append(c)
+    return out
 
 
 def character_in_shot(ep, shot: Shot) -> Optional[Character]:
@@ -190,13 +244,25 @@ def run(ctx: StageContext) -> StageReport:
     locked = 0
     crowded = 0
     changed = 0
+    declared = 0                 # 出镜角色由分镜显式给出的镜头数
+    guessed = 0                  # 靠名字子串猜的（旧 episode.json / 模型漏字段）
+    unknown: List[str] = []      # 声明了但不在卡司里的名字
     for shot in ep.shots:
         labels = reference_labels(ep, shot, max_refs)
         if labels:
             locked += 1
+        if shot.characters is not None:
+            declared += 1
+            _found, bad = declared_characters(ep, shot)
+            unknown.extend(n for n in bad if n not in unknown)
+        elif characters_by_text(ep, shot):
+            # 只有真的猜出人来了才算"靠猜" —— 空镜本来就该是空数组
+            guessed += 1
         # 出镜人数超过 provider 能吃的参考图数时，多出来的人**锁不住**。
         # 这不会报错，只会让人在成片里看到一张陌生的脸 —— 所以要说出来。
-        if len(characters_in_shot(ep, shot)) > max_refs:
+        # 这里用**并集**（声明 ∪ 文本推断）：模型少声明一个人不能让这条告警
+        # 跟着消失，否则它就变成"只要模型不写就永远不报警"——比没有还糟。
+        if len(characters_on_screen(ep, shot)) > max_refs:
             crowded += 1
         if not shot.image_prompt or ctx.force:
             shot.image_prompt = compose_image_prompt(ep, shot, labels)
@@ -221,6 +287,23 @@ def run(ctx: StageContext) -> StageReport:
     lock = f"参考锁定 {locked}/{len(ep.shots)} 镜（provider 单镜最多 {max_refs} 张参考图）"
     report.notes.append(head)
     report.notes.append(lock)
+    if unknown:
+        # 名字写错一个字，这一镜就锁不住脸 —— 而它不会报错
+        shown = "、".join(unknown[:4]) + ("…" if len(unknown) > 4 else "")
+        report.notes.append(
+            f"[!] 分镜声明的出镜角色里有 {len(unknown)} 个不在卡司里：{shown}。"
+            "这些镜头拿不到参考图，脸锁不住 —— 多半是名字没写对（对不上角色表）"
+        )
+    if declared or guessed:
+        cast_note = f"出镜角色：{declared} 镜由分镜显式给出"
+        if guessed:
+            cast_note += f"，{guessed} 镜靠名字子串猜（旧 episode.json 或模型漏了 characters 字段）"
+            report.notes.append(
+                f"[!] {cast_note}。猜的方式在多角色同框时会错，"
+                "重跑 script 阶段可以补上显式声明"
+            )
+        else:
+            report.notes.append(cast_note)
     if crowded:
         report.notes.append(
             f"[!] {crowded} 个镜头出镜人数超过参考图上限（{max_refs}），"

@@ -214,7 +214,7 @@ class DryRunTextProvider(TextProvider):
             shots: List[Dict[str, Any]] = []
             pool = self._scene_shots(si, hero_name, second[0], location, closers[si])
             for oi in range(shots_per_scene):
-                framing, action, line = pool[oi % len(pool)]
+                framing, action, line, on_screen = pool[oi % len(pool)]
                 if oi >= len(pool):
                     # 要求的格数比模板多：复用景别但把动作标注成后续节拍，
                     # 避免出现"两镜一模一样的画面提示词"。
@@ -224,6 +224,7 @@ class DryRunTextProvider(TextProvider):
                     "framing": framing,
                     "action": action,
                     "dialogue": line,
+                    "characters": list(on_screen),
                     "location": location if (si != scene_count - 1 or oi < shots_per_scene - 1) else "桥底-车边",
                 })
             scenes.append({
@@ -245,26 +246,37 @@ class DryRunTextProvider(TextProvider):
         }
 
     def _scene_shots(self, si: int, hero: str, other: str, location: str,
-                     closer: str) -> List[Tuple[str, str, str]]:
+                     closer: str) -> List[Tuple[str, str, str, List[str]]]:
+        """返回 (景别, 动作, 台词, **画面里看得见的角色**)。
+
+        第四个元素是 `characters` 字段 —— 骨架按它决定拿谁的定妆照锁脸。
+        dryrun 是"零配置也能跑通"的参考实现，所以它要把**完整的契约**演出来，
+        而不只是把 JSON 填满：空镜是空数组、单人镜只有一个人、
+        群戏两个人都在里面。忽略这个字段也能跑，但那一镜就会退化成
+        靠名字子串猜（报告里会写出来）。
+        """
         if si == 0:
             return [
-                ("establishing", f"{location}空镜，环境建立，光线偏暗", ""),
-                ("medium", f"{hero}独自停留，动作细微，像在确认什么", ""),
-                ("close", f"{hero}的视线突然定住，瞳孔收缩", f"{hero}：（低声）不对。"),
-                ("extreme_close", closer, ""),
+                ("establishing", f"{location}空镜，环境建立，光线偏暗", "", []),
+                ("medium", f"{hero}独自停留，动作细微，像在确认什么", "", [hero]),
+                ("close", f"{hero}的视线突然定住，瞳孔收缩", f"{hero}：（低声）不对。", [hero]),
+                ("extreme_close", closer, "", [hero]),
             ]
         if si == 1:
             return [
-                ("wide", f"{hero}与{other}隔着一张桌子对坐，空间关系紧张", ""),
-                ("medium", f"{other}低头回避视线，手指敲桌面", ""),
-                ("close", f"{hero}前倾逼问，语气压得很低", f"{hero}：你到底在瞒我什么？"),
-                ("medium", f"{other}终于抬头，表情松动", f"{other}：……知道的人，都走了。"),
+                ("wide", f"{hero}与{other}隔着一张桌子对坐，空间关系紧张", "", [hero, other]),
+                ("medium", f"{other}低头回避视线，手指敲桌面", "", [other]),
+                ("close", f"{hero}前倾逼问，语气压得很低",
+                 f"{hero}：你到底在瞒我什么？", [hero]),
+                ("medium", f"{other}终于抬头，表情松动",
+                 f"{other}：……知道的人，都走了。", [other]),
             ]
         return [
-            ("wide", f"{location}，两人距离被骤然拉开，冷风灌进画面", ""),
-            ("medium", f"{hero}后退半步，意识到危险逼近", ""),
-            ("close", f"{hero}做出决定的瞬间，呼吸稳定下来", f"{hero}：那就从我开始。"),
-            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", ""),
+            ("wide", f"{location}，两人距离被骤然拉开，冷风灌进画面", "", [hero, other]),
+            ("medium", f"{hero}后退半步，意识到危险逼近", "", [hero]),
+            ("close", f"{hero}做出决定的瞬间，呼吸稳定下来",
+             f"{hero}：那就从我开始。", [hero]),
+            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", "", []),
         ]
 
 

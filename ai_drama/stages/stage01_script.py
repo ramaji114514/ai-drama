@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from ..core import paths
 from ..core.context import StageContext, StageReport
@@ -65,6 +66,7 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
           "framing": "establishing|wide|medium|close|extreme_close",
           "action": "画面里发生什么（纯视觉）",
           "dialogue": "这一镜的台词，没有就留空字符串",
+          "characters": ["这一镜画面里**看得见**的角色名，按重要性排序"],
           "location": "本镜地点"
         }}
       ]
@@ -76,6 +78,9 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
 - `action` 和后续的画面提示词里**绝对不能出现台词、音效、音乐、旁白**等听觉信息，
   画面提示词只描述看得见的东西。
 - 台词统一放 `dialogue` 字段，它会被送进 TTS，不会进画面模型。
+- `characters` 必须是 `characters` 顶层数组里出现过的名字，**逐字照抄**。
+  只写画面里真的看得见的人：空镜、只闻其声、画外音都留空数组。
+  这个字段决定后续拿谁的定妆照去锁脸，写错不会报错，只会让人看到一张陌生的脸。
 - 最后一个镜头必须留悬念（短剧的钩子）。"""
 
 
@@ -195,6 +200,40 @@ def _parse(text: str) -> Dict[str, Any]:
     )
 
 
+def _cast_of(sh: Dict[str, Any]) -> Optional[List[str]]:
+    """这一镜的出镜角色。**None 和 [] 必须分开**：
+
+      * 字段没给 / 给了 null -> None（"没声明"，骨架退回名字子串猜）
+      * 给了空数组         -> []（"画面里没有人"，空镜）
+
+    合并成一种就会丢掉一个真实状态：要么空镜被迫锁一张不该出现的脸，
+    要么所有旧 episode.json 都被当成空镜、一个人都不锁。
+    """
+    raw = sh.get("characters")
+    return None if raw is None else _names(raw)
+
+
+def _names(raw: Any) -> List[str]:
+    """把模型给的 `characters` 洗成干净的角色名列表。
+
+    模型有时给逗号分隔的字符串而不是数组，有时给个 null，有时重复。
+    这里一律吃掉 —— 但**绝不把非字符串塞进去**：一个 dict 溜进来会让后面
+    按名字查表的地方静默失配。
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [p for p in re.split(r"[,，、/|;；]", raw)]
+    out: List[str] = []
+    for name in raw:
+        if not isinstance(name, str):
+            continue
+        name = name.strip().strip("「」\"' ")
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
     ep = Episode(
         run_id=ctx.run.run_id,
@@ -229,6 +268,9 @@ def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
                 action=sh.get("action", ""),
                 dialogue=sh.get("dialogue", "") or "",
                 framing=sh.get("framing", "medium"),
+                # 区分"没声明"（None）和"声明画面里没人"（[]）：
+                # 两者都退回去猜的话，"这是一镜空镜"这句话就白说了。
+                characters=_cast_of(sh),
             )
             shot.duration = estimate_shot_seconds(shot)
             scene.shots.append(shot)

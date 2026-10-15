@@ -157,6 +157,26 @@ def poll(self, job_id, *, timeout=300.0):
 `tests/test_job_ledger.py` 里有三条测试钉住这套行为（含用 `KeyboardInterrupt`
 模拟进程被打断），照它们写就行。
 
+### ⑥ 文本 provider 要给出镜角色
+
+分镜阶段的文本 provider 在每个镜头的 JSON 里都要带一个 `characters` 数组，
+列出**画面里真的看得见**的角色名（空镜是空数组）：
+
+```json
+{"order": 2, "framing": "close", "action": "苏蔓的视线突然定住",
+ "dialogue": "苏蔓：（低声）不对。", "characters": ["苏蔓"], "location": "楼道"}
+```
+
+骨架按它决定拿谁的定妆照去锁脸。**不写不会报错** —— 那一镜会退化成"在
+`action` 里找角色名的子串"，而猜错的表现是成片里出现一张陌生的脸，
+只有观众会发现。`providers/dryrun.py` 的 `_scene_shots()` 是填全了这个字段的
+参考实现。
+
+两条细节：`characters` 为空数组表示"这一镜是空镜"（谁都不锁），
+字段缺失/null 表示"没声明"（骨架退回猜）—— 这两者不一样，别用 null 表示空镜。
+名字要和顶层 `characters` 数组里的**逐字一致**；对不上时那一镜拿不到参考图，
+报告里会把不认识的名字列出来。
+
 ## 请求字段是配置，不是常量
 
 各家把参考素材放在哪个字段完全不一致（`image` / `image_urls` / `ref_images`…），
