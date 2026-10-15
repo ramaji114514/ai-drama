@@ -120,12 +120,19 @@ def run(ctx: StageContext) -> StageReport:
     report.processed = 0
     if ctx.bundle.lipsync is None:
         report.skipped = len(candidates)
-        report.notes.append(
-            f"[!] 没有配置 lip-sync provider（AI_DRAMA_LIPSYNC）—— "
-            f"{len(candidates)} 个有台词的镜头被跳过，成片里嘴型没有对齐。"
-            f"接上见 docs/adding-a-provider.md；要把这件事变成硬门槛，"
-            f"打开 config/qc_rules.yaml 的 require_lipsync。"
-        )
+        # 一个镜头都不需要同步时不喊 —— 没有东西被跳过，"嘴型没对上"也就无从谈起。
+        # 空喊会训练出"报告里的 [!] 不用看"这个习惯，那比不报还糟。
+        if candidates:
+            report.notes.append(
+                f"[!] 没有配置 lip-sync provider（AI_DRAMA_LIPSYNC）—— "
+                f"{len(candidates)} 个有台词的镜头被跳过，成片里嘴型没有对齐。"
+                f"接上见 docs/adding-a-provider.md；要把这件事变成硬门槛，"
+                f"打开 config/qc_rules.yaml 的 require_lipsync。"
+            )
+        else:
+            report.notes.append(
+                "没有需要口型同步的镜头（空镜与纯动作镜头本来就没有可对的嘴）"
+            )
         ctx.log(f"[lipsync] 跳过 {report.skipped}（未配置 provider）")
         return report
 

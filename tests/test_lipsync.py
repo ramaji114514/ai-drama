@@ -229,6 +229,22 @@ def test_missing_provider_is_loud_not_silent(tmp_path, need_ffmpeg):
     assert "嘴型没有对齐" in joined
 
 
+@pytest.mark.ffmpeg
+def test_missing_provider_stays_quiet_when_nothing_needs_it(tmp_path, need_ffmpeg):
+    """没有镜头需要同步时不要喊。
+
+    报告里每次都出现一条 [!]，会训练出"报告里的 [!] 不用看"这个习惯 ——
+    那比不报还糟。
+    """
+    ep = _episode(_shot(0, dialogue=""))
+    _make_clip(tmp_path, ep, _shot(0, dialogue=""))
+    report = lipsync_stage.run(_ctx(tmp_path, ep, None, drop_lipsync=True))
+
+    joined = " ".join(report.notes)
+    assert "[!]" not in joined
+    assert "没有需要口型同步的镜头" in joined
+
+
 # ———————————————————————————————————————————————— 拼接与质检
 
 @pytest.mark.ffmpeg
