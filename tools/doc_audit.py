@@ -26,7 +26,8 @@ from typing import Dict, List, Set
 RUNTIME_ARTIFACTS = {
     "episode.json", "final_video.mp4", "timeline.json", "subtitles.srt",
     "subtitles.ass", ".env", "project.json", "qc_report.json", "cost.json",
-    "runs", "shot.json", "voice.wav", "clip.mp4", "keyframe.png",
+    "cost_report.json", "runs", "shot.json", "voice.wav", "clip.mp4",
+    "keyframe.png", "scene_video.mp4", "bgm.wav", "ai_drama.sqlite3",
 }
 
 #: 引用的是**别的**项目，不是本仓库。文档里都写明了"参考项目"。
@@ -128,6 +129,9 @@ PROMISES = (
     ("角色圣经", r"class Project"),
     ("出镜角色", r"characters_on_screen"),
     ("角色稳定 id", r"def resolve_all|char_id"),
+    ("资产台账", r"def reconcile|def scan_run_dir"),
+    ("血缘", r"def lineage|asset_edges"),
+    ("画幅", r"def normalize_aspect|def frame_size"),
 )
 
 

@@ -60,16 +60,24 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
     if not shot.dialogue.strip():
         return ("skipped", {}, "无台词")
     dest = paths.voice(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
+    voice = _voice_for(ctx, shot)
     if dest.exists() and dest.stat().st_size > 0 and not ctx.force:
+        ctx.asset(dest, kind="voice", via="audio", prompt=shot.dialogue,
+                  shot_id=shot.shot_id,
+                  meta={"shot": shot.label, "voice": voice, "reused": True})
         return ("skipped", {}, str(dest))
     try:
-        voice = _voice_for(ctx, shot)
         usage = call_with_retry(
             ctx.bundle.audio.tts, shot.dialogue, dest,
             voice=voice, speed=1.0, shot_label=shot.label,
             label=f"{shot.label} tts",
         )
         ctx.store.update_shot(shot.shot_id, state="done", audio=str(dest))
+        # 台词存进 prompt 字段：这是"这句配音说的是哪句词"，追改台词时要用。
+        # 音色也记下来 —— 同一句词换个音色听起来就是另一个人。
+        ctx.asset(dest, kind="voice", via="audio", prompt=shot.dialogue,
+                  shot_id=shot.shot_id,
+                  meta={"shot": shot.label, "voice": voice, "reused": False})
         return ("done", dict(usage or {}), str(dest))
     except Exception as exc:                      # noqa: BLE001
         ctx.heal_shot(shot, exc)
@@ -87,6 +95,9 @@ def _sfx_for_shot(ctx: StageContext, shot: Shot) -> List[Tuple[str, Any]]:
     for idx, cue in enumerate(shot.sfx):
         dest = paths.sfx(ctx.root, ctx.run.run_id, shot.scene_id, shot.order, idx)
         if dest.exists() and dest.stat().st_size > 0 and not ctx.force:
+            ctx.asset(dest, kind="sfx", via="sfx", prompt=cue,
+                      shot_id=shot.shot_id,
+                      meta={"shot": shot.label, "index": idx, "reused": True})
             out.append((str(dest), {}))
             continue
         # 音效比镜头略长一点：短了会显得"点到为止"，长了会盖住下一镜
@@ -96,6 +107,9 @@ def _sfx_for_shot(ctx: StageContext, shot: Shot) -> List[Tuple[str, Any]]:
             duration=min(3.0, max(0.6, shot.duration * 0.6)),
             scene=shot.label, label=f"{shot.label} sfx「{cue}」",
         )
+        ctx.asset(dest, kind="sfx", via="sfx", prompt=cue,
+                  shot_id=shot.shot_id,
+                  meta={"shot": shot.label, "index": idx, "reused": False})
         out.append((str(dest), usage))
     return out
 
@@ -177,11 +191,17 @@ def run(ctx: StageContext) -> StageReport:
             ctx.ledger.add(usage, stage="audio")
             report.money += float(usage.get("money") or 0)
             report.artifacts["bgm"] = str(bgm)
+            ctx.asset(bgm, kind="bgm", via="audio", prompt=ep.style,
+                      meta={"duration": round(float(ep.total_duration or 0), 3),
+                            "reused": False})
         except Exception as exc:                  # noqa: BLE001
             report.notes.append(f"BGM 生成失败（不致命）：{type(exc).__name__}: {exc}")
             report.failed += 1
     else:
         report.artifacts["bgm"] = str(bgm)
+        ctx.asset(bgm, kind="bgm", via="audio", prompt=ep.style,
+                  meta={"duration": round(float(ep.total_duration or 0), 3),
+                        "reused": True})
 
     ctx.log(f"[audio] [OK] 配音 {report.processed} / 失败 {report.failed} / 跳过 {report.skipped}")
     return report

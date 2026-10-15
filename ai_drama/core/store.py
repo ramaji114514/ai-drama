@@ -73,6 +73,37 @@ CREATE TABLE IF NOT EXISTS costs (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_costs_run ON costs(run_id);
+
+CREATE TABLE IF NOT EXISTS assets (
+    asset_id    TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL DEFAULT '',
+    stage       TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL DEFAULT 'other',
+    rel         TEXT NOT NULL DEFAULT '',
+    size        INTEGER NOT NULL DEFAULT 0,
+    sha256      TEXT NOT NULL DEFAULT '',
+    provider    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    shot_id     TEXT NOT NULL DEFAULT '',
+    prompt_hash TEXT NOT NULL DEFAULT '',
+    prompt      TEXT NOT NULL DEFAULT '',
+    meta        TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assets_run ON assets(run_id);
+CREATE INDEX IF NOT EXISTS idx_assets_sha ON assets(sha256);
+CREATE INDEX IF NOT EXISTS idx_assets_kind ON assets(run_id, kind);
+
+-- 血缘：parent -> child。rel 是 ref / source / derive（见 core/assets.py）。
+CREATE TABLE IF NOT EXISTS asset_edges (
+    parent_id  TEXT NOT NULL,
+    child_id   TEXT NOT NULL,
+    rel        TEXT NOT NULL DEFAULT 'derive',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (parent_id, child_id, rel)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_child ON asset_edges(child_id);
 """
 
 
@@ -330,6 +361,120 @@ class Store:
             "by_provider": dict(sorted(by_provider.items(), key=lambda kv: -kv[1])),
             "lines": lines,
         }
+
+    # ————————————————————————————————————- assets（资产台账 + 血缘）
+
+    def upsert_asset(self, asset: Any) -> None:
+        """写一条资产记录。**同 id 覆盖**，不追加。
+
+        id 由 (run_id, 相对路径) 推导，所以一个阶段重跑时是同一行被改写 ——
+        追加的话，"这件东西生成过几次"这个问题在台账里就永远答不对了。
+        """
+        row = asset.to_row()
+        now = now_iso()
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO assets (asset_id, run_id, stage, kind, rel, size, sha256,"
+                " provider, model, shot_id, prompt_hash, prompt, meta, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(asset_id) DO UPDATE SET"
+                " stage=excluded.stage, kind=excluded.kind, rel=excluded.rel,"
+                " size=excluded.size, sha256=excluded.sha256, provider=excluded.provider,"
+                " model=excluded.model, shot_id=excluded.shot_id,"
+                " prompt_hash=excluded.prompt_hash, prompt=excluded.prompt,"
+                " meta=excluded.meta, updated_at=excluded.updated_at",
+                (
+                    row["asset_id"], row["run_id"], row["stage"], row["kind"], row["rel"],
+                    row["size"], row["sha256"], row["provider"], row["model"],
+                    row["shot_id"], row["prompt_hash"], row["prompt"], row["meta"],
+                    now, now,
+                ),
+            )
+
+    def link_assets(self, parent_id: str, child_id: str, rel: str = "derive") -> None:
+        """记一条血缘边。同一对 (parent, child, rel) 天然幂等。"""
+        if not parent_id or not child_id or parent_id == child_id:
+            return
+        with self.tx() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO asset_edges (parent_id, child_id, rel, created_at)"
+                " VALUES (?,?,?,?)",
+                (parent_id, child_id, rel, now_iso()),
+            )
+
+    def get_asset(self, asset_id: str) -> Optional[Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM assets WHERE asset_id=?", (asset_id,)
+            ).fetchone()
+        return _asset(row) if row else None
+
+    def list_assets(self, run_id: str = "", *, kind: str = "",
+                    limit: int = 0) -> List[Any]:
+        sql = "SELECT * FROM assets WHERE 1=1"
+        args: List[Any] = []
+        if run_id:
+            sql += " AND run_id=?"
+            args.append(run_id)
+        if kind:
+            sql += " AND kind=?"
+            args.append(kind)
+        sql += " ORDER BY run_id, kind, rel"
+        if limit:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [_asset(r) for r in rows]
+
+    def assets_sharing_content(self, sha256: str, *, exclude: str = "") -> List[Any]:
+        """sha256 相同的记录 —— 用来回答"这张图在别处也出现过吗"。"""
+        if not sha256:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM assets WHERE sha256=? AND asset_id<>?",
+                (sha256, exclude),
+            ).fetchall()
+        return [_asset(r) for r in rows]
+
+    def asset_edges(self, asset_id_: str = "") -> List[Any]:
+        """给定 id 时返回**与它有关**的两个方向的边；不给则返回全部。"""
+        with self._lock:
+            if asset_id_:
+                rows = self._conn.execute(
+                    "SELECT * FROM asset_edges WHERE parent_id=? OR child_id=?",
+                    (asset_id_, asset_id_),
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM asset_edges").fetchall()
+        return [dict(r) for r in rows]
+
+    def asset_summary(self, run_id: str) -> Dict[str, Any]:
+        """按种类点数 + 总字节数。刻意不打钱 —— 钱在 costs 表里，两笔账分开算。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT kind, COUNT(*) AS n, COALESCE(SUM(size),0) AS b"
+                " FROM assets WHERE run_id=? GROUP BY kind", (run_id,)
+            ).fetchall()
+            edges = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM asset_edges e JOIN assets a ON a.asset_id=e.child_id"
+                " WHERE a.run_id=?", (run_id,)
+            ).fetchone()
+        by_kind = {r["kind"]: {"count": int(r["n"]), "bytes": int(r["b"])} for r in rows}
+        return {
+            "run_id": run_id,
+            "total": sum(v["count"] for v in by_kind.values()),
+            "bytes": sum(v["bytes"] for v in by_kind.values()),
+            "edges": int(edges["n"]) if edges else 0,
+            "by_kind": dict(sorted(by_kind.items(), key=lambda kv: -kv[1]["count"])),
+        }
+
+
+def _asset(row: Any) -> Any:
+    from .assets import Asset
+
+    return Asset.from_row(row)
 
 
 def default_db_path() -> Path:

@@ -203,6 +203,10 @@ def run(ctx: StageContext) -> StageReport:
     )
     report.artifacts["qc_report"] = str(out)
     report.qc_state = qc.state.value
+    # 质检报告也进台账。它没有上游（不是"由哪件素材变来的"），但它**是**
+    # 某一次判断的产物 —— 记下来，"这份报告说的是哪一版成片"才有答案。
+    ctx.asset(out, kind="report", meta={"qc_state": qc.state.value,
+                                        "findings": len(qc.findings)})
 
     counts = qc.counts()
     report.processed = qc.shots_total

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core import media, paths
 from ..core.context import StageContext, StageReport
@@ -124,11 +124,19 @@ def run(ctx: StageContext) -> StageReport:
             continue
 
         out = paths.scene_video(ctx.root, ctx.run.run_id, scene.scene_id)
-        if out.exists() and not ctx.force:
+        reused = out.exists() and not ctx.force
+        if reused:
             report.skipped += 1
         else:
             _concat_mp4(clips, out, paths.work_dir(ctx.root, ctx.run.run_id, scene.scene_id))
             report.processed += 1
+        # 场次拼接产物也要进台账：它在磁盘上占地最大、也是成片的直接上游，
+        # 漏掉它的话对账会报"磁盘上有、台账里没有" —— 而它确实是个产物。
+        ctx.asset(
+            out, kind="scene", sources=[ctx.asset_of(c) for c in clips],
+            meta={"scene": scene.scene_id, "shots": len(clips),
+                  "seconds": round(sum(durations), 3), "reused": reused},
+        )
         scene_videos.append((scene.scene_id, out, used_shots, durations))
 
     if not scene_videos:
@@ -149,14 +157,43 @@ def run(ctx: StageContext) -> StageReport:
     cues: List[Tuple[float, float, str]] = []
     timeline_rows: List[Dict[str, object]] = []
     sfx_missing: List[str] = []
+    # 台账里的两批上游 —— 它们回答的是**两个不同的问题**：
+    #   * final_sources  成片的直接上游。视频轨来自场次拼接产物（不是单镜片段），
+    #                    音频轨来自配音/音效/BGM。只收去重后的 id。
+    #   * timeline_sources 时间轴逐镜的来源：这一镜的片段（口型同步过就是同步那段）、
+    #                    这句配音、这几条音效。它是"第 12 秒用的是哪次渲染"的答案。
+    # 用一条链去回答两个问题，结果就是两个都答不准。
+    final_sources: List[Any] = []
+    timeline_sources: List[Any] = []
+    _seen_final: set = set()
+    _seen_tl: set = set()
+
+    def _add(bucket: List[Any], seen: set, path: Optional[Path]) -> None:
+        if path is None:
+            return
+        item = ctx.asset_of(path)
+        if item is not None and item.asset_id not in seen:
+            seen.add(item.asset_id)
+            bucket.append(item)
+
+    def _use(path: Optional[Path]) -> None:
+        _add(final_sources, _seen_final, path)
+
+    def _use_tl(path: Optional[Path]) -> None:
+        _add(timeline_sources, _seen_tl, path)
+
     offset = 0.0
+
     for _sid, _scene_path, shots, durations in scene_videos:
+        _use(_scene_path)          # 成片的视频轨就是这些场次拼接产物
         for shot, dur in zip(shots, durations):
             voice = paths.voice(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
             has_voice = voice.exists() and voice.stat().st_size > 0
             line = shot.dialogue.strip()
             if line and has_voice:
                 segments.append((voice, offset))
+                _use(voice)
+                _use_tl(voice)
                 # 字幕停留多久：以**配音实际长度**为准（加一点收尾留白），
                 # 但不超出这一镜 —— 镜头切了字幕还在，观众会以为说这话的是下一镜的人。
                 spoken = probe_duration(voice) or dur
@@ -170,9 +207,14 @@ def run(ctx: StageContext) -> StageReport:
                                    shot.order, idx)
                 if s_path.exists() and s_path.stat().st_size > 0:
                     effects.append((s_path, offset))
+                    _use(s_path)
+                    _use_tl(s_path)
                     shot_sfx.append(cue)
                 else:
                     sfx_missing.append(f"{shot.label}「{cue}」")
+            # 这一镜实际用的是哪一段（口型同步过就用同步后的）—— 这正是
+            # "成片里第 12 秒用的是哪次渲染"的答案，而不是"应该有"的那一段。
+            _use_tl(_clip_for(ctx, shot))
             timeline_rows.append({
                 "scene": shot.scene_id,
                 "shot": shot.label,
@@ -187,6 +229,10 @@ def run(ctx: StageContext) -> StageReport:
     tl_path.write_text(
         json.dumps(timeline_rows, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    # 时间轴记进台账：它描述的是**这一条片子怎么排出来的**，是排查
+    # "字幕飘了/音效晚了"时要看的第一个文件。上游是上面收集的那批片段与声音。
+    ctx.asset(tl_path, kind="timeline", sources=timeline_sources,
+              meta={"rows": len(timeline_rows), "seconds": round(offset, 3)})
 
     final = paths.episode_video(ctx.root, ctx.run.run_id)
     media.mix_voice_and_music(
@@ -208,10 +254,14 @@ def run(ctx: StageContext) -> StageReport:
     # 烧不烧由 ctx.subtitles 决定。这两个开关分开是有意的 ——
     # "我不要字幕" 和 "我要一份能自己调样式的外挂字幕" 是两件事。
     srt_note = "无台词，未生成字幕"
+    srt_asset = None
     if cues:
         srt = media.build_srt(cues, paths.subtitles(ctx.root, ctx.run.run_id))
         report.artifacts["subtitles"] = str(srt)
         report.artifacts["timeline"] = str(tl_path)
+        srt_asset = ctx.asset(srt, kind="subtitle",
+                              meta={"lines": len(cues), "format": "srt",
+                                    "burned": bool(ctx.subtitles)})
         if ctx.subtitles:
             size = media.probe_size(final)
             if not size:
@@ -232,6 +282,11 @@ def run(ctx: StageContext) -> StageReport:
                 final.unlink()
                 subbed.replace(final)
                 report.artifacts["subtitle_script"] = str(ass)
+                # ASS 是**从 SRT 的那几句**排出来的，不是独立一份 ——
+                # 把这条边记上，改一句台词时才知道要重排哪两个文件。
+                ctx.asset(ass, kind="subtitle", derives=[srt_asset] if srt_asset else [],
+                          meta={"lines": len(cues), "format": "ass",
+                                "canvas": f"{width}x{height}"})
                 srt_note = (
                     f"字幕 {len(cues)} 句已烧录（{width}x{height} / 字体 "
                     f"{media.subtitle_font()} / 字号按画面高度版式换算）"
@@ -247,6 +302,12 @@ def run(ctx: StageContext) -> StageReport:
         report.artifacts["timeline"] = str(tl_path)
 
     report.artifacts["final_video"] = str(final)
+    bgm = paths.bgm(ctx.root, ctx.run.run_id)
+    if bgm.exists():
+        _use(bgm)
+    ctx.asset(final, kind="final", sources=final_sources,
+              meta={"seconds": round(offset, 3), "scenes": len(scene_videos),
+                    "shots": len(timeline_rows), "subtitles": len(cues)})
     report.notes.append(
         f"成片 {final.name} / 约 {offset:.1f}s / 对齐台词 {len(segments)} 句"
     )

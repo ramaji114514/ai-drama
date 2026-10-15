@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import CostEntry, Episode, Run
 from .store import Store
@@ -105,10 +105,58 @@ class StageContext:
     #: 出图（stage02/stage03）用它；视频请求用的是 `caps.size`，两者由
     #: Pipeline 从**同一个**画幅推导，所以不会各说一套。
     frame_size: Tuple[int, int] = (720, 1280)
+    #: 当前阶段名，由 `Pipeline` 在调用阶段函数之前写进来。
+    #: 存在的理由只有一个：`ctx.asset()` 记账时要写清楚"谁生成的"，
+    #: 而让每个阶段自己把名字传一遍，迟早会有一处抄错。
+    stage: str = ""
 
     def log(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def asset(self, path: Path, *, kind: str = "other", via: str = "",
+              provider: str = "", model: str = "", prompt: str = "",
+              shot_id: str = "", refs: Sequence[Any] = (),
+              sources: Sequence[Any] = (), derives: Sequence[Any] = (),
+              meta: Optional[Dict[str, Any]] = None) -> Any:
+        """把一个产物记进台账，并连上它的来路。返回 `assets.Asset`。
+
+        `via` 是 `bundle` 上的槽位名（`t2i` / `image` / `video` / `audio` /
+        `sfx` / `lipsync`），用来填 provider 与模型名；阶段代码不该自己去拼
+        provider 名字 —— 拼错了台账就会指到一个不存在的厂商上。
+
+        三个来路口径（`refs` / `sources` / `derives`）见 `core/assets.py` 的
+        `EDGE_RELS`：作为参考图被用上 / 作为素材被合成进去 / 同一件东西的下一步形态。
+
+        **同一次 run 里同一个路径永远得到同一个 asset_id**，所以阶段重跑时
+        是同一行被改写，不会攒出一堆"同一个文件的第 N 版"。
+        """
+        from . import assets as assetslib
+
+        if via and not provider:
+            slot = getattr(self.bundle, via, None)
+            if slot is not None:
+                provider = getattr(slot, "name", "") or ""
+                model = model or getattr(slot, "model", "") or ""
+        item = assetslib.make_asset(
+            self.run.run_id, self.root, Path(path),
+            kind=kind, stage=self.stage, provider=provider, model=model,
+            shot_id=shot_id, prompt=prompt, meta=meta,
+        )
+        self.store.upsert_asset(item)
+        for rel, group in (("ref", refs), ("source", sources), ("derive", derives)):
+            for parent in group:
+                pid = getattr(parent, "asset_id", "") or str(parent or "")
+                if pid:
+                    self.store.link_assets(pid, item.asset_id, rel)
+        return item
+
+    def asset_of(self, path: Path) -> Optional[Any]:
+        """这条路径在台账里已经记过吗？（按 id 反查，不扫盘）"""
+        from . import assets as assetslib
+
+        rel = assetslib.rel_of(self.root, Path(path))
+        return self.store.get_asset(assetslib.asset_id(self.run.run_id, rel))
 
     def save_project(self) -> None:
         """把圣经写回磁盘（新角色入册、定妆照路径更新）。

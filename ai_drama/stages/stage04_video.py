@@ -308,6 +308,16 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
 
     ctx.store.update_shot(shot.shot_id, state="done", video=str(dest), error=None,
                           job_ids={})
+    # 记进台账：片段是由**这一镜的关键帧**动起来的，那条边（source）就是
+    # "成片里这一秒用的是哪张图"的答案。关键帧没记账时不留空边。
+    kf = paths.keyframe(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
+    kf_asset = ctx.asset_of(kf)
+    ctx.asset(dest, kind="clip", via="video",
+              prompt=shot.video_prompt or shot.action or "",
+              shot_id=shot.shot_id,
+              sources=[kf_asset] if kf_asset else [],
+              meta={"shot": shot.label, "duration": round(float(shot.duration or 0), 3),
+                    "parts": total, "keyframe": str(kf)})
     return ("done", _merge_usage(part_usages), str(dest))
 
 

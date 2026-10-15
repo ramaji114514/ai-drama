@@ -54,6 +54,11 @@ def _sync_one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
         # 上一次可能正是"文件写成了、记账失败"的那种中断，
         # 不补记的话质检会读到空的 shot.synced，报一个根本不存在的缺失。
         ctx.store.update_shot(shot.shot_id, synced=str(dest))
+        clip_now, _ = _clip_and_audio(ctx, shot)
+        clip_asset = ctx.asset_of(clip_now) if clip_now else None
+        ctx.asset(dest, kind="synced", via="lipsync", shot_id=shot.shot_id,
+                  sources=[clip_asset] if clip_asset else [],
+                  meta={"shot": shot.label, "reused": True})
         return ("skipped", {}, str(dest))
 
     clip, audio = _clip_and_audio(ctx, shot)
@@ -92,6 +97,10 @@ def _sync_one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
 
         tmp.replace(dest)
         ctx.store.update_shot(shot.shot_id, state="done", synced=str(dest))
+        clip_asset = ctx.asset_of(clip)
+        ctx.asset(dest, kind="synced", via="lipsync", shot_id=shot.shot_id,
+                  sources=[clip_asset] if clip_asset else [],
+                  meta={"shot": shot.label, "reused": False})
         return ("done", dict(usage or {}), str(dest))
     except Exception as exc:                          # noqa: BLE001
         tmp.unlink(missing_ok=True)

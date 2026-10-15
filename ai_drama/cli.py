@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .core import media, paths, project
+from .core import assets as assetslib, media, paths, project
 from .core.catalog import KINDS
 from .core.faces import (
     FaceAudit,
@@ -665,6 +665,170 @@ def cmd_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assets(args: argparse.Namespace) -> int:
+    """资产台账：这次 run 产出了什么、都是谁生成的。
+
+    `--check` 是这一层的重点：台账和磁盘**对不上就要报**。两种情况分开报，
+    因为它们说明的是完全不同的事 ——
+      * `磁盘上有、台账里没有`：有产物绕过了台账，于是"这东西哪来的"从此没答案；
+      * `台账里有、磁盘上没有`：记录在说谎，按它找文件会找到空气。
+    它**只报不改**（不自动补记录）：自动补上只会把"漏记账的产出点"永远藏起来。
+    """
+    load_env()
+    store = open_store(args)
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    rows = store.list_assets(args.run_id or "", kind=args.kind or "")
+    if not rows:
+        where = args.run_id or "任何 run"
+        print(f"台账里没有 {where} 的资产记录。")
+        if not args.run_id:
+            print("（老 run 没有台账：这一层是后加的，重跑一次才有。）")
+        return 1 if args.run_id else 0
+
+    if args.check:
+        return _assets_check(args, store, root, rows)
+
+    if args.json:
+        print_json([r.to_row() for r in rows])
+        return 0
+
+    if args.run_id:
+        summary = store.asset_summary(args.run_id)
+        print(f"run {args.run_id}  资产 {summary['total']} 件 / "
+              f"{summary['bytes'] / 1024 / 1024:.1f} MB / 血缘边 {summary['edges']} 条")
+        for kind, info in summary["by_kind"].items():
+            print(f"  {kind:<10} {info['count']:>4} 件  {info['bytes'] / 1024:>9.1f} KB"
+                  f"   {assetslib.KIND_DESC.get(kind, '')}")
+        print("")
+    for row in rows:
+        print(f"  {row.asset_id}  {row.describe()}")
+    return 0
+
+
+def _assets_check(args: argparse.Namespace, store, root: Path, rows: List[Any]) -> int:
+    """对账。返回码：0 = 一致，2 = 有差异（和 qc 的分法一致，脚本里能直接用）。"""
+    runs = sorted({r.run_id for r in rows if r.run_id})
+    bad = 0
+    for run_id in runs:
+        drift = assetslib.reconcile(
+            root, run_id, store.list_assets(run_id),
+            paths.run_dir(root, run_id),
+        )
+        head = f"run {run_id}：{drift.summary()}"
+        if drift.ok:
+            print(f"[OK] {head}")
+            continue
+        bad += 1
+        print(f"[X]  {head}")
+        if drift.missing:
+            print(f"     台账里有、磁盘上不在（{len(drift.missing)} 个）：")
+            for rel in drift.missing[:20]:
+                print(f"       - {rel}")
+            if len(drift.missing) > 20:
+                print(f"       …还有 {len(drift.missing) - 20} 个")
+        if drift.unrecorded:
+            print(f"     磁盘上有、台账里没有（{len(drift.unrecorded)} 个）：")
+            for rel in drift.unrecorded[:20]:
+                print(f"       - {rel}")
+            if len(drift.unrecorded) > 20:
+                print(f"       …还有 {len(drift.unrecorded) - 20} 个")
+    if not bad:
+        print("\n台账与磁盘一致。")
+        return 0
+    print(f"\n{bad} 个 run 的台账和磁盘对不上 —— 这正是这一层存在的意义。")
+    return 2
+
+
+def cmd_asset(args: argparse.Namespace) -> int:
+    """一件资产的前因后果。
+
+    往上追是"它是由什么变来的"（定妆照 → 关键帧 → 片段 → 成片），
+    往下追是"它被用在了哪里"。两个方向都要能看 ——
+    只看上游回答不了"我改这张定妆照会波及多少东西"。
+    """
+    load_env()
+    store = open_store(args)
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    item = store.get_asset(args.asset_id)
+    if item is None:
+        print(f"台账里没有这个 asset_id：{args.asset_id}")
+        print("提示：`python run.py assets [run_id]` 可以看到 id 列表。")
+        return 1
+
+    parents = assetslib.parents_of(store.asset_edges(item.asset_id), item.asset_id)
+    children = assetslib.children_of(store.asset_edges(item.asset_id), item.asset_id)
+
+    if args.json:
+        print_json({
+            "asset": item.to_row(),
+            "parents": parents,
+            "children": children,
+        })
+        return 0
+
+    print(f"{item.asset_id}  {item.kind}")
+    print(f"  路径      {item.rel}")
+    path = assetslib.resolve(root, item.rel)
+    exists = path.exists()
+    print(f"  磁盘      {'在' if exists else '**不在**（记录还在，文件没了）'}")
+    if item.size:
+        print(f"  大小      {item.size} B")
+    if item.sha256:
+        print(f"  sha256    {item.sha256[:16]}…")
+    if item.stage:
+        print(f"  阶段      {item.stage}")
+    if item.provider or item.model:
+        print(f"  provider  {item.provider or '(未记录)'}"
+              f"{'  model ' + item.model if item.model else ''}")
+    if item.prompt:
+        brief = item.prompt.replace("\n", " ")
+        print(f"  提示词    {brief[:120]}{'…' if len(brief) > 120 else ''}")
+        print(f"  提示词指纹 {item.prompt_hash}")
+    if item.meta:
+        print(f"  备注      {json.dumps(item.meta, ensure_ascii=False)}")
+
+    # 同一个内容出现在别处吗（同一张图被两个 run 用过 / 复制过）
+    if item.sha256:
+        twins = store.assets_sharing_content(item.sha256, exclude=item.asset_id)
+        if twins:
+            print(f"  同内容的还有 {len(twins)} 条记录：")
+            for t in twins[:5]:
+                print(f"    {t.asset_id}  {t.run_id}  {t.rel}")
+
+    if parents:
+        print("  上游（它是由什么变来的）：")
+        for pid, rel in parents:
+            p = store.get_asset(pid)
+            label = p.describe() if p else f"{pid}（记录已不在）"
+            print(f"    <- [{rel}] {label}")
+    if children:
+        print("  下游（它被用在了哪里）：")
+        for cid, rel in children:
+            c = store.get_asset(cid)
+            label = c.describe() if c else f"{cid}（记录已不在）"
+            print(f"    -> [{rel}] {label}")
+    if not parents and not children:
+        print("  没有任何血缘边（它是这一层的起点，或者记它的时候上游还没进台账）")
+
+    if args.tree:
+        tree = assetslib.lineage(
+            {a.asset_id: a for a in store.list_assets(item.run_id)},
+            store.asset_edges(), item.asset_id,
+        )
+        if len(tree) <= 1:
+            print("\n  没有更早的来路（它本来就是起点，或者记它的时候上游还没进台账）")
+        else:
+            print("\n  来路（缩进一层 = 更早一步）：")
+            for node in tree:
+                if node.depth == 0:
+                    print(f"    {node.asset.describe()}")
+                else:
+                    tail = "（同上，这里不再展开）" if node.repeat else ""
+                    print(f"    {'  ' * node.depth}<- [{node.rel}] "
+                          f"{node.asset.describe()}{tail}")
+    return 0
+
+
 def cmd_models(args: argparse.Namespace) -> int:
     """看模型目录，以及**骨架此刻真正读到的是哪一份**。
 
@@ -944,6 +1108,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("run_id")
     add_common(sp)
     sp.set_defaults(func=cmd_cost)
+
+    sp = sub.add_parser("assets", help="资产台账：产出了什么、谁生成的（--check 对账）")
+    sp.add_argument("run_id", nargs="?", default="",
+                    help="不给就列出全部 run 的资产")
+    sp.add_argument("--kind", help="只看某一类：" + " / ".join(assetslib.KINDS))
+    sp.add_argument("--check", action="store_true",
+                    help="把台账和磁盘比一遍（0=一致 2=对不上），只报不改")
+    sp.add_argument("--json", action="store_true")
+    add_common(sp)
+    sp.set_defaults(func=cmd_assets)
+
+    sp = sub.add_parser("asset", help="一件资产的前因后果（血缘）")
+    sp.add_argument("asset_id")
+    sp.add_argument("--tree", action="store_true", help="一路追到根")
+    sp.add_argument("--json", action="store_true")
+    add_common(sp)
+    sp.set_defaults(func=cmd_asset)
 
     sp = sub.add_parser("qc", help="质检报告（0=通过 2=不通过 3=没查成）")
     sp.add_argument("run_id")

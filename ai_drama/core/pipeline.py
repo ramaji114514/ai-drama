@@ -162,6 +162,7 @@ class Pipeline:
                 raise KeyError(f"unknown stage: {stage}")
             self.store.update_run(run.run_id, stage=stage)
             ctx.log(f"\n=== [{stage}] ===")
+            ctx.stage = stage          # 台账要写清楚是谁生成的（ctx.asset）
             try:
                 rep = fn(ctx)
             except Exception as exc:                      # noqa: BLE001
@@ -190,9 +191,15 @@ class Pipeline:
 
         final = paths.episode_video(self.root, run.run_id)
         cost = ledger.summary()
-        (paths.cost_report(self.root, run.run_id)).write_text(
+        cost_json = paths.cost_report(self.root, run.run_id)
+        cost_json.write_text(
             json.dumps(cost, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # 成本明细也是产物（对账会报"磁盘上有、台账里没有"）。
+        # 它不在任何阶段里 —— 是流水线自己在收尾时写的，所以在这里记账。
+        ctx.asset(cost_json, kind="cost",
+                  meta={"total_money": cost.get("total_money", 0),
+                        "calls": cost.get("calls", 0)})
 
         # ———————————————————————— 质检闸门
         # 三态：pass / fail / unchecked。**unchecked 不通过** ——

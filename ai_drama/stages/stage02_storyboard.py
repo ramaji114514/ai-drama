@@ -222,12 +222,21 @@ def run(ctx: StageContext) -> StageReport:
             if ctx.project is not None:
                 # 按身份记，这样别名/改名都不会让这条记录走丢
                 ctx.project.remember_portrait(ch.char_id or ch.name, str(picked))
+            # 也记进资产台账：**"这件东西是哪一次 run 造的"和"哪些 run 用过它"
+            # 是两个问题**。复用时同样记一条（不填 provider —— 这一集确实没生成
+            # 它，填个厂商名等于编），这样反查"第 2 集用的这张脸出自哪里"有答案。
+            ctx.asset(picked, kind="portrait", via="t2i",
+                      meta={"character": ch.name, "char_id": ch.char_id or "",
+                            "reused": True})
             reused += 1
             continue
 
         # 2) 单集模式的退路：本 run 里已经生成过
         if canon is None and run_level.exists() and not ctx.force:
             ch.ref_image = str(run_level)
+            ctx.asset(run_level, kind="portrait", via="t2i",
+                      meta={"character": ch.name, "char_id": ch.char_id or "",
+                            "reused": True})
             report.skipped += 1
             continue
 
@@ -252,6 +261,9 @@ def run(ctx: StageContext) -> StageReport:
             ch.ref_image = str(dest)
             if ctx.project is not None:
                 ctx.project.remember_portrait(ch.char_id or ch.name, str(dest))
+            ctx.asset(dest, kind="portrait", via="t2i", prompt=ch.anchor_prompt,
+                      meta={"character": ch.name, "char_id": ch.char_id or "",
+                            "reused": False})
             portraits += 1
         except Exception as exc:                      # noqa: BLE001
             # 定妆照失败不应该让整片停摆，但必须留痕

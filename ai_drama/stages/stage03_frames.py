@@ -14,12 +14,39 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core import paths
 from ..core.context import StageContext, StageReport
 from ..core.models import Shot
 from .stage02_storyboard import character_in_shot
+
+
+def _reference(ctx: StageContext, shot: Shot) -> Optional[Path]:
+    ep = ctx.episode
+    ch = character_in_shot(ep, shot)
+    ref = Path(ch.ref_image) if (ch and ch.ref_image) else None
+    if ref and not ref.exists():
+        ref = None
+    return ref
+
+
+def _record(ctx: StageContext, shot: Shot, dest: Path, ref: Optional[Path],
+            *, reused: bool) -> None:
+    """把关键帧记进台账，并连上它是拿谁的定妆照生成的。
+
+    这张图是整条链里**最该被追溯**的东西：成片里每一镜长什么样都能追到它，
+    而它的提示词是模型写的。定妆照那条边找不到时不编（老 run 的台账里没有
+    定妆照记录，那就只留关键帧这一条），宁可血缘断在这儿也不要指错人。
+    """
+    ref_asset = ctx.asset_of(ref) if ref else None
+    ctx.asset(
+        dest, kind="keyframe", via="image", prompt=shot.image_prompt,
+        shot_id=shot.shot_id,
+        refs=[ref_asset] if ref_asset else [],
+        meta={"shot": shot.label, "framing": shot.framing or "",
+              "ref_image": str(ref) if ref else "", "reused": reused},
+    )
 
 
 def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
@@ -30,14 +57,10 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
     report.money 只是个汇总数，丢了 this 就没法做成本报表了。
     """
     dest = paths.keyframe(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
+    ref = _reference(ctx, shot)
     if dest.exists() and not ctx.force:
+        _record(ctx, shot, dest, ref, reused=True)
         return ("skipped", {}, str(dest))
-
-    ep = ctx.episode
-    ch = character_in_shot(ep, shot)
-    ref = Path(ch.ref_image) if (ch and ch.ref_image) else None
-    if ref and not ref.exists():
-        ref = None
 
     ctx.store.update_shot(shot.shot_id, state="running", error=None)
     try:
@@ -50,6 +73,7 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
             scene=shot.framing,
         )
         ctx.store.update_shot(shot.shot_id, state="done", keyframe=str(dest), error=None)
+        _record(ctx, shot, dest, ref, reused=False)
         return ("done", dict(usage or {}), str(dest))
     except Exception as exc:                      # noqa: BLE001
         ctx.heal_shot(shot, exc)                  # 失败留痕，绝不静默降级
@@ -66,6 +90,7 @@ def run(ctx: StageContext) -> StageReport:
         if dest.exists() and not ctx.force:
             ctx.store.update_shot(shot.shot_id, state="done", keyframe=str(dest))
             shot.keyframe = str(dest)
+            _record(ctx, shot, dest, _reference(ctx, shot), reused=True)
             report.skipped += 1
         else:
             todo.append(shot)

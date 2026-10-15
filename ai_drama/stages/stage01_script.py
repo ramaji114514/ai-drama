@@ -115,6 +115,9 @@ def run(ctx: StageContext) -> StageReport:
         report.skipped = len(ctx.episode.shots)
         report.notes.append(f"episode.json 已存在，跳过生成（{ep_json}）")
         report.artifacts["episode"] = str(ep_json)
+        ctx.asset(ep_json, kind="episode", via="text",
+                  meta={"scenes": len(ctx.episode.scenes),
+                        "shots": len(ctx.episode.shots), "reused": True})
         return report
 
     scene_count = int(ctx.run.meta.get("scenes", 3))
@@ -181,6 +184,11 @@ def run(ctx: StageContext) -> StageReport:
     report.processed = len(ep.shots)
     report.notes.append(f"{len(ep.scenes)} 场 / {len(ep.shots)} 镜 / 角色 {len(ep.characters)} 个")
     report.artifacts["episode"] = str(ep_json)
+    # 剧本进台账：往下每一张关键帧、每一句配音追到头都是它。
+    # prompt 存的是**想法**（"暴雨夜，外卖员…"），那才是这一集的起点。
+    ctx.asset(ep_json, kind="episode", via="text", prompt=ctx.run.idea,
+              meta={"scenes": len(ep.scenes), "shots": len(ep.shots),
+                    "characters": len(ep.characters)})
     ctx.log(f"[script] [OK] {report.notes[-1]}")
     return report
 
