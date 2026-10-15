@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from dataclasses import replace
+from typing import Any, Dict, List, Optional, Tuple
 
-from . import paths
+from . import media, paths
 from .context import Ledger, StageContext, StageReport
 from .models import STAGES, Episode, Run, new_id
 from .project import Project, load as load_project
@@ -27,7 +28,7 @@ class Pipeline:
     def __init__(self, root: Path, store: Store, bundle, *, budget_usd: float = 0.0,
                  concurrency: int = 3, force: bool = False, verbose: bool = True,
                  strict_qc: bool = True, subtitles: bool = True,
-                 project_id: Optional[str] = None):
+                 project_id: Optional[str] = None, aspect: str = "9:16"):
         self.root = Path(root)
         self.store = store
         self.bundle = bundle
@@ -39,6 +40,44 @@ class Pipeline:
         self.subtitles = subtitles
         #: 这一步跑的是哪部剧（None = 单集模式，角色每集重新生成）。
         self.project_id = project_id
+        #: 画幅。**不认识就当场报错**，不退回默认值 —— 把横屏猜成竖屏，
+        #: 要等到看成片才发现。真正的尺寸在 apply_aspect() 里落到 provider 的
+        #: caps 上；这里只保存用户写的那个字符串。
+        self.aspect = media.normalize_aspect(aspect)
+        #: 本 run 的画面像素尺寸。**在这里就算出来**（而不是等 run() 时），
+        #: 因为 `run` 命令要在建 run 之前把它打印出来，而"不支持这个画幅"
+        #: 这种错误更该在任何钱花出去之前抛。
+        self.frame_size: Tuple[int, int] = self.apply_aspect(self.aspect)
+
+    # ————————————————————————————————————--- 画幅
+
+    def apply_aspect(self, aspect: str) -> Tuple[int, int]:
+        """把画幅落成**唯一**一处的像素尺寸，并写进 video provider 的 caps。
+
+        `stage04_video` 送出去的 `size` 就是 `caps.size`，出图用的是
+        `ctx.frame_size` —— 两个数字必须同源。分开写的结果是"关键帧 720x1280、
+        片段 1280x720"，而拼接时 ffmpeg 会默默给你一个尺寸不一致的片子。
+
+        拿不准的能力边界要说出来：provider 声明了 `aspect_ratios` 而里面没有
+        这个画幅时，**当场抛**，而不是让它按自己的默认值渲一版。
+        """
+        size = media.frame_size(aspect)
+        self.frame_size = size
+        from ..providers.base import caps_of
+
+        caps = caps_of(self.bundle.video)
+        allowed = getattr(caps, "aspect_ratios", ()) or ()
+        if allowed and aspect not in allowed:
+            raise ValueError(
+                f"这个视频 provider（{getattr(self.bundle.video, 'name', '?')}）"
+                f"不支持 {aspect} 画幅，它声明只支持 {'、'.join(allowed)}。"
+                f"换一个模型，或者去掉 --aspect（默认 {media.normalize_aspect('9:16')}）。"
+            )
+        try:
+            self.bundle.video.caps = replace(caps, width=size[0], height=size[1])
+        except (AttributeError, TypeError):            # pragma: no cover - 只读适配器
+            pass
+        return size
 
     # ————————————————————————————————————--- 启动
 
@@ -49,6 +88,10 @@ class Pipeline:
             # 集号在**建 run 之前**算：episode_no() 数的是库里已有的 run，
             # 建完再算会把自己也算进去，于是第 1 集显示成"第 2 集"。
             meta.setdefault("episode_no", self.episode_no(pid))
+        # 画幅是**这条片子的属性**，不是这次命令行的属性：记进 run，
+        # 之后 resume 不写 --aspect 也还是同一个形状（否则补渲一个镜头
+        # 就会得到一块不同尺寸的画面）。
+        meta.setdefault("aspect", self.aspect)
         run_id = new_id("run")
         out_dir = paths.run_dir(self.root, run_id)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +122,12 @@ class Pipeline:
         ledger = Ledger(self.store, run.run_id, self.budget_usd)
         reports: List[StageReport] = []
 
+        # 画幅以 **run 上记的那个**为准，不是这次命令行的。
+        # 补渲一个镜头时得到一块不同尺寸的画面，是那种"跑完了、片子也生成了、
+        # 只是内容不对"的失败 —— 没有一步会报错。
+        aspect = media.normalize_aspect((run.meta or {}).get("aspect") or self.aspect)
+        frame_size = self.apply_aspect(aspect)
+
         episode = self.store.get_episode(run.run_id) or Episode(
             run_id=run.run_id, idea=run.idea
         )
@@ -102,7 +151,7 @@ class Pipeline:
             root=self.root, ledger=ledger, force=self.force,
             concurrency=self.concurrency, verbose=self.verbose,
             strict_qc=self.strict_qc, subtitles=self.subtitles,
-            project=project,
+            project=project, frame_size=frame_size,
         )
 
         self.store.update_run(run.run_id, state="running")

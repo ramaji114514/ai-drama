@@ -16,7 +16,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .models import Shot
 
@@ -111,6 +111,44 @@ def try_probe_duration(path: Path) -> Optional[float]:
         return probe_duration(path)
     except Exception:                              # noqa: BLE001
         return None
+
+
+#: 支持的画幅 -> 实际像素。
+#:
+#: 竖屏是短剧的主战场（默认值），但"画幅"不该是一条写在两个调用点里的
+#: 字面量：它同时决定出图的 size、图生视频请求里的 size（stage04 送的是
+#: `caps.size`）、封面和字幕边距的比例参照。这些只要有一处对不上，
+#: 出来的片子就会在中间某个时刻换一次尺寸 —— 而 ffmpeg 不会为此报错。
+ASPECTS: Dict[str, Tuple[int, int]] = {
+    "9:16": (720, 1280),     # 竖屏（默认）
+    "16:9": (1280, 720),     # 横屏
+    "1:1": (720, 720),       # 方形
+    "4:5": (864, 1080),      # 信息流常见的竖版
+}
+
+
+def normalize_aspect(aspect: str) -> str:
+    """把用户写的画幅归一化；不认识就**报错**，不退回默认值。
+
+    退回默认值（比如把 `16:9` 猜成 `9:16`）会让整部横屏片竖着交付，
+    而要等到看成片才发现。
+    """
+    key = (aspect or "").strip().replace("x", ":").replace("×", ":")
+    if key in ASPECTS:
+        return key
+    # 允许直接写像素："720x1280" 也认
+    for name, (w, h) in ASPECTS.items():
+        if key == f"{w}:{h}":
+            return name
+    raise ValueError(
+        f"不认识的画幅 '{aspect}'。支持：{'、'.join(ASPECTS)}"
+        f"（也可以直接写像素，例如 1280x720）"
+    )
+
+
+def frame_size(aspect: str) -> Tuple[int, int]:
+    """画幅 -> 实际像素。"""
+    return ASPECTS[normalize_aspect(aspect)]
 
 
 def image_to_clip(image: Path, out: Path, *, duration: float, fps: int = 24,

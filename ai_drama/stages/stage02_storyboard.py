@@ -223,7 +223,7 @@ def run(ctx: StageContext) -> StageReport:
         dest = canon if canon is not None else run_level
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            usage = ctx.bundle.t2i.png(ch.anchor_prompt, dest, size=(720, 1280),
+            usage = ctx.bundle.t2i.png(ch.anchor_prompt, dest, size=ctx.frame_size,
                                        shot_label=f"portrait/{ch.name}")
             ctx.ledger.add(usage, stage="storyboard")
             report.money += float(usage.get("money") or 0)

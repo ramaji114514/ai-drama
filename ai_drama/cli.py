@@ -239,6 +239,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         strict_qc=not getattr(args, "no_strict_qc", False),
         subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
         project_id=project_id or None,
+        aspect=getattr(args, "aspect", "") or "9:16",
     )
     stages = args.stages.split(",") if args.stages else None
     run = pipe.start(
@@ -250,6 +251,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print(f"run_id = {run.run_id}")
     print(f"out    = {run.out_dir}")
+    print(f"画幅   = {run.meta.get('aspect')}（{pipe.frame_size[0]}x{pipe.frame_size[1]}）")
     if project_id:
         proj = project.load(root, project_id)
         print(f"project= {project_id}《{proj.title}》"
@@ -270,6 +272,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         force=args.force, verbose=True,
         strict_qc=not getattr(args, "no_strict_qc", False),
         subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
+        aspect=getattr(args, "aspect", "") or "9:16",
     )
     stages = args.stages.split(",") if args.stages else None
     result = pipe.resume(args.run_id, stages=stages)
@@ -440,6 +443,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         # 不然面对 60 个 run_id 你分不清哪个是第几集。
         print(f"project {run_pid}  第 {run.meta.get('episode_no', '?')} 集")
     print(f"out    {run.out_dir}")
+    # 画幅也要在这里露一面：它是"成片形状"的唯一记录处，而老 run 根本没有这个
+    # 字段（那时写死在两个调用点里）。不显示的话，"为什么这条片是竖的"
+    # 只能靠翻代码回答。
+    run_aspect = (run.meta or {}).get("aspect") or "9:16（老 run 没有记录，按默认）"
+    print(f"画幅   {run_aspect}")
     print(f"final  {run.final_video or '-'}")
     if run.error:
         print(f"error  {run.error}")
@@ -890,6 +898,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="质检非 PASS 也放行（默认严格：unchecked/fail 都不算完成）")
     sp.add_argument("--no-subtitles", action="store_true",
                     help="不把字幕烧进画面（SRT 照样写出来，可外挂）")
+    sp.add_argument("--aspect", default="", metavar="W:H",
+                    help="画幅：9:16（默认，竖屏）/ 16:9 / 1:1 / 4:5，也可写 1280x720。"
+                         "模型不支持时当场报错，不会偷偷按竖屏渲")
     add_common(sp)
     sp.set_defaults(func=cmd_run)
 
@@ -901,6 +912,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--no-strict-qc", action="store_true")
     sp.add_argument("--no-subtitles", action="store_true")
+    sp.add_argument("--aspect", default="", metavar="W:H",
+                    help="一般不用写：画幅记在 run 上，resume 会沿用原样。"
+                         "只有老 run（这个字段还不存在时建的）才需要在这里补")
     add_common(sp)
     sp.set_defaults(func=cmd_resume)
 

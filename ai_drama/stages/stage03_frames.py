@@ -44,7 +44,7 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
         usage = ctx.bundle.image.png(
             shot.image_prompt,
             dest,
-            size=(720, 1280),
+            size=ctx.frame_size,
             ref_image=ref,          # 有定妆照就做图生图，这是跨镜头一致性的关键
             shot_label=shot.label,
             scene=shot.framing,

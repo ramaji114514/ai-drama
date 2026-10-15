@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import CostEntry, Episode, Run
 from .store import Store
@@ -101,6 +101,10 @@ class StageContext:
     #: 阶段不该自己去读 project.json：读一次、传进来，才能保证同一次 run 里
     #: 所有阶段看到的是同一份设定。
     project: Optional[Any] = None
+    #: 本 run 的画面像素尺寸，由 `Pipeline` 按 `run.meta["aspect"]` 算好传进来。
+    #: 出图（stage02/stage03）用它；视频请求用的是 `caps.size`，两者由
+    #: Pipeline 从**同一个**画幅推导，所以不会各说一套。
+    frame_size: Tuple[int, int] = (720, 1280)
 
     def log(self, msg: str) -> None:
         if self.verbose:
