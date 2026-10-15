@@ -97,10 +97,22 @@ class StageContext:
     #: 把字幕烧进画面。默认开 —— 竖屏短剧大量是静音刷的，没有字幕等于没台词。
     #: 关掉不等于没有字幕：SRT 照样写出来，只是不烙在画面上。
     subtitles: bool = True
+    #: 这部剧的角色圣经（None = 单集模式，角色由分镜阶段的 LLM 每集重新发明）。
+    #: 阶段不该自己去读 project.json：读一次、传进来，才能保证同一次 run 里
+    #: 所有阶段看到的是同一份设定。
+    project: Optional[Any] = None
 
     def log(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def save_project(self) -> None:
+        """把圣经写回磁盘（新角色入册、定妆照路径更新）。
+
+        没有项目时是 no-op —— 单集模式不该凭空造出一个项目目录来。
+        """
+        if self.project is not None:
+            self.project.save(self.root)
 
     def heal_shot(self, shot, exc: Exception) -> None:
         """把失败写进 store，**保留现场**，绝不静默吞掉。

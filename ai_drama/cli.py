@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .core import media, paths
+from .core import media, paths, project
 from .core.catalog import KINDS
 from .core.faces import (
     FaceAudit,
@@ -220,12 +220,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     store = open_store(args)
     root = Path(args.root).resolve() if args.root else Path.cwd()
     bundle = registry.build_bundle()
+    project_id = (getattr(args, "project", "") or "").strip()
+    if project_id and project.load(root, project_id) is None:
+        print(f"project 不存在：{project_id}")
+        print(f"（找的是 {paths.project_json(root, project_id)}）")
+        print("先建一个：python run.py project new \"剧名\"")
+        return 1
     pipe = Pipeline(
         root, store, bundle,
         budget_usd=args.budget, concurrency=args.concurrency,
         force=args.force, verbose=True,
         strict_qc=not getattr(args, "no_strict_qc", False),
         subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
+        project_id=project_id or None,
     )
     stages = args.stages.split(",") if args.stages else None
     run = pipe.start(
@@ -237,6 +244,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print(f"run_id = {run.run_id}")
     print(f"out    = {run.out_dir}")
+    if project_id:
+        proj = project.load(root, project_id)
+        print(f"project= {project_id}《{proj.title}》"
+              f"  第 {run.meta.get('episode_no', '?')} 集"
+              f"  在册角色 {len(proj.characters)} 个")
     result = pipe.run(run, stages=stages)
     print_result(result)
     return 0 if result["state"] == "done" else 2
@@ -257,6 +269,135 @@ def cmd_resume(args: argparse.Namespace) -> int:
     result = pipe.resume(args.run_id, stages=stages)
     print_result(result)
     return 0 if result["state"] == "done" else 2
+
+
+def _root_of(args: argparse.Namespace) -> Path:
+    return Path(args.root).resolve() if args.root else Path.cwd()
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    """`project` 后面没跟子命令时的用法提示。
+
+    不用 `parser.print_help()`：那个闭包会在 build_parser 里被后面的
+    `sp = sub.add_parser(...)` 覆盖掉，打出来的是**另一个**命令的帮助。
+    """
+    print("用法：run.py project <子命令>")
+    print()
+    print("  new <剧名>            建一部剧（不花钱，只写一个 json）")
+    print("  list                  列出所有剧、各自的集数与角色数")
+    print("  show <project_id>     看角色圣经与这部剧下的每一集")
+    print("  set <project_id> <角色> [--voice/--desc/--anchor-prompt]")
+    print()
+    print("为什么需要它：默认一次 run 出一集，角色由模型每集重新发明 ——")
+    print("第 2 集的脸就跟第 1 集不一样了。把每一集都挂在同一个 --project 下，")
+    print("角色外观与定妆照就会跨集复用同一份文件。")
+    return 1
+
+
+def cmd_project_new(args: argparse.Namespace) -> int:
+    """建一部剧。这一步**不花钱**，只是把角色圣经的文件放好。"""
+    load_env()
+    root = _root_of(args)
+    proj = project.new_project(args.title, logline=args.logline or "", style=args.style or "")
+    p = proj.save(root)
+    print(f"project_id = {proj.project_id}")
+    print(f"title      = {proj.title}")
+    print(f"file       = {p}")
+    print()
+    print("接下来每一集都带上它，角色与定妆照就会跨集复用：")
+    print(f"  python run.py run --project {proj.project_id} --idea \"第 1 集的想法\"")
+    print("角色圣经可以直接手改（加角色、改外貌、定音色），改完下一集生效。")
+    return 0
+
+
+def cmd_project_list(args: argparse.Namespace) -> int:
+    load_env()
+    root = _root_of(args)
+    store = open_store(args)
+    runs = store.list_runs()
+    rows = project.list_projects_lenient(root)
+    if not rows:
+        print(f"还没有任何项目（{paths.projects_root(root)} 是空的）")
+        print("建一个：python run.py project new \"剧名\"")
+        return 0
+    print(f"{'project_id':<24} {'集数':>4} {'角色':>4}  标题")
+    for proj, err in rows:
+        if proj is None:
+            print(f"{'?':<24} {'':>4} {'':>4}  [坏] {err}")
+            continue
+        n = sum(1 for r in runs if (r.meta or {}).get("project_id") == proj.project_id)
+        print(f"{proj.project_id:<24} {n:>4} {len(proj.characters):>4}  {proj.title}")
+    return 0
+
+
+def cmd_project_show(args: argparse.Namespace) -> int:
+    load_env()
+    root = _root_of(args)
+    store = open_store(args)
+    proj = project.load(root, args.project_id)
+    if proj is None:
+        print(f"project 不存在：{args.project_id}")
+        return 1
+
+    print(f"project_id {proj.project_id}")
+    print(f"title      {proj.title}")
+    if proj.logline:
+        print(f"logline    {proj.logline}")
+    if proj.style:
+        print(f"style      {proj.style}")
+    print(f"file       {paths.project_json(root, proj.project_id)}")
+
+    print(f"\n在册角色 {len(proj.characters)} 个：")
+    for c in proj.characters:
+        # 定妆照是否**真的在磁盘上**：圣经里写着路径、文件没了，是这里最该
+        # 被抓出来的一种坏 —— 它会让下一集静默地重新生成一张脸。
+        if not c.ref_image:
+            shot = "无定妆照"
+        elif Path(c.ref_image).exists():
+            shot = "定妆照 OK"
+        else:
+            shot = f"[!] 定妆照丢了：{c.ref_image}"
+        voice = proj.voice_map.get(c.name, "（未指定，用 --voice）")
+        print(f"  {c.name:<12} {shot:<34} 音色 {voice}")
+        if args.verbose and c.desc:
+            print(f"      {c.desc}")
+
+    episodes = [r for r in store.list_runs()
+                if (r.meta or {}).get("project_id") == proj.project_id]
+    episodes.sort(key=lambda r: r.created_at)
+    print(f"\n这部剧下的 run {len(episodes)} 个（按时间）：")
+    for i, r in enumerate(episodes, start=1):
+        mark = "成片" if r.final_video else r.state
+        print(f"  第 {i:>2} 集  {r.run_id}  {mark:<8} {r.idea[:32]}")
+    return 0
+
+
+def cmd_project_set(args: argparse.Namespace) -> int:
+    """给一个角色写定音色 / 改外貌描述。手改 project.json 也行，这里图个方便。"""
+    load_env()
+    root = _root_of(args)
+    proj = project.load(root, args.project_id)
+    if proj is None:
+        print(f"project 不存在：{args.project_id}")
+        return 1
+    canon = proj.character_by_name(args.name)
+    if canon is None:
+        print(f"角色不在圣经里：{args.name}")
+        print("在册角色：" + "、".join(c.name for c in proj.characters))
+        return 1
+    if args.desc is not None:
+        canon.desc = args.desc
+    if args.anchor_prompt is not None:
+        canon.anchor_prompt = args.anchor_prompt
+    if args.voice is not None:
+        proj.voice_map[canon.name] = args.voice
+    p = proj.save(root)
+    print(f"已更新 {canon.name} -> {p}")
+    if args.anchor_prompt is not None:
+        print("[!] 改了 anchor_prompt 但**没有重新生成定妆照**："
+              "这一集的参考图还是旧的那张。要换脸请删掉 "
+              f"{paths.project_portrait(root, proj.project_id, canon.name)} 再跑。")
+    return 0
 
 
 def _outstanding_jobs(shot_row: Dict[str, Any]) -> Dict[str, str]:
@@ -287,6 +428,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"run    {run.run_id}")
     print(f"state  {run.state}   stage={run.stage}")
     print(f"idea   {run.idea}")
+    run_pid = (run.meta or {}).get("project_id", "")
+    if run_pid:
+        # 一集跑完之后最该知道的就是"这是哪部剧的第几集" ——
+        # 不然面对 60 个 run_id 你分不清哪个是第几集。
+        print(f"project {run_pid}  第 {run.meta.get('episode_no', '?')} 集")
     print(f"out    {run.out_dir}")
     print(f"final  {run.final_video or '-'}")
     if run.error:
@@ -428,10 +574,14 @@ def cmd_faces(args: argparse.Namespace) -> int:
     ep = Episode.from_dict(json.loads(ep_json.read_text(encoding="utf-8")))
 
     audits = []
+    run_pid = (run.meta or {}).get("project_id", "")
     for ch in ep.characters:
-        files = paths.portrait_variants(root, run.run_id, ch.name)
+        files = paths.portrait_variants(root, run.run_id, ch.name, run_pid)
         if not files:
-            audits.append(FaceAudit(character=ch.name, skipped="run 目录里没有这个角色的定妆照"))
+            audits.append(FaceAudit(
+                character=ch.name,
+                skipped=f"run 目录（和项目 {run_pid or '—'} 的 portraits）里都没有这个角色的定妆照",
+            ))
             continue
         # 新者在前：同来源同类别时，"最新的一张"才是默认基准
         files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
@@ -675,6 +825,37 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--db", help="SQLite 路径（默认 ./runs/ai_drama.sqlite3）")
         sp.add_argument("--root", help="产物根目录（默认当前目录）")
 
+    sp = sub.add_parser("project", help="一部剧的角色圣经：跨集复用角色与定妆照")
+    psub = sp.add_subparsers(dest="project_cmd")
+
+    p1 = psub.add_parser("new", help="建一部剧（不花钱）")
+    p1.add_argument("title")
+    p1.add_argument("--logline", default="")
+    p1.add_argument("--style", default="")
+    add_common(p1)
+    p1.set_defaults(func=cmd_project_new)
+
+    p2 = psub.add_parser("list", help="列出所有剧")
+    add_common(p2)
+    p2.set_defaults(func=cmd_project_list)
+
+    p3 = psub.add_parser("show", help="看角色圣经与这部剧下的每一集")
+    p3.add_argument("project_id")
+    p3.add_argument("-v", "--verbose", action="store_true", help="连角色描述一起打出来")
+    add_common(p3)
+    p3.set_defaults(func=cmd_project_show)
+
+    p4 = psub.add_parser("set", help="改一个在册角色的描述 / 定妆照提示词 / 音色")
+    p4.add_argument("project_id")
+    p4.add_argument("name")
+    p4.add_argument("--desc")
+    p4.add_argument("--anchor-prompt")
+    p4.add_argument("--voice")
+    add_common(p4)
+    p4.set_defaults(func=cmd_project_set)
+
+    sp.set_defaults(func=cmd_project)
+
     sp = sub.add_parser("doctor", help="环境自检")
     sp.set_defaults(func=cmd_doctor)
 
@@ -693,6 +874,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scenes", type=int, default=3, help="场次数（默认 3）")
     sp.add_argument("--shots", type=int, default=4, help="每场镜头数（默认 4）")
     sp.add_argument("--voice", default="female_01", help="配音音色")
+    sp.add_argument("--project", default="", metavar="PROJECT_ID",
+                    help="归到某部剧下：角色与定妆照跨集复用（见 project new）")
     sp.add_argument("--stages", help=f"只跑指定阶段，逗号分隔：{','.join(STAGES)}")
     sp.add_argument("--budget", type=float, default=0.0, help="预算上限（美元），0 表示不限")
     sp.add_argument("--concurrency", type=int, default=3)

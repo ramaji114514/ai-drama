@@ -24,17 +24,23 @@ from ..providers.base import ProviderError
 
 
 def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
-                 shots_per_scene: int = 4) -> str:
+                 shots_per_scene: int = 4, scripture: str = "") -> str:
     """把 idea 包装成给文本模型的指令。
 
     刻意把"镜头数/场次数"作为**显式参数**而不是让模型自由发挥：
     短剧的时长是产品约束，不是创作自由度。模型决定"拍什么"，
     骨架决定"有多少格"。
+
+    `scripture` 是项目的角色圣经片段（见 core/project.py）。它进提示词是为了
+    让模型**用对**在册角色；就算模型不听话，合并那一步也会把外观改回圣经里的值。
     """
     style_line = f"\n画面风格要求：{style}" if style else ""
+    # 角色圣经接在"想法"后面、硬性要求前面：模型先看到"这部剧已经有哪些人、
+    # 长什么样"，再去排场次。放到最后面容易被当成补充说明忽略掉。
+    bible_line = f"\n\n{scripture}" if scripture else ""
     return f"""把一个想法展开成一部竖屏短剧的分镜表。
 
-想法：{idea}{style_line}
+想法：{idea}{style_line}{bible_line}
 
 硬性要求：
 1. 共 {scene_count} 场，每场 {shots_per_scene} 个镜头，严格按顺序编号。
@@ -95,11 +101,13 @@ def run(ctx: StageContext) -> StageReport:
 
     scene_count = int(ctx.run.meta.get("scenes", 3))
     shots_per_scene = int(ctx.run.meta.get("shots_per_scene", 4))
+    scripture = ctx.project.scripture_block() if ctx.project is not None else ""
     prompt = build_prompt(
         ctx.run.idea,
         style=ctx.run.meta.get("style", ""),
         scene_count=scene_count,
         shots_per_scene=shots_per_scene,
+        scripture=scripture,
     )
 
     ctx.log(f"[script] 调用 {ctx.bundle.text.name} 生成分镜…")
@@ -115,6 +123,20 @@ def run(ctx: StageContext) -> StageReport:
 
     payload = _parse(text)
     ep = _to_episode(ctx, payload)
+
+    # ———————————————— 与角色圣经合并
+    # 在册角色的名字/外貌/定妆照**一律以圣经为准**，模型这一集写了什么都不算数。
+    # 这是跨集一致性的第一道保障（第二道在 stage02：复用同一张定妆照文件）。
+    if ctx.project is not None:
+        cast, stats = ctx.project.merge_cast(ep.characters)
+        ep.characters = cast
+        # 新登场的角色立刻入册，下一集它就变成在册角色。
+        # 定妆照要等 stage02 生成，那时再 remember_portrait()。
+        ctx.save_project()
+        report.notes.append(
+            f"角色圣经：沿用 {stats['locked']} 个在册角色"
+            + (f"，新入册 {stats['new']} 个" if stats["new"] else "")
+        )
 
     ctx.store.save_episode(ep)
     ctx.store.sync_shots(ctx.run.run_id, ep)

@@ -17,10 +17,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from ..core import paths
+from ..core import media, paths
 from ..core.context import StageContext, StageReport
 from ..core.models import Shot
 from ..providers.base import call_with_retry
+
+
+def _voice_for(ctx: StageContext, shot: Shot) -> str:
+    """这一句台词用谁的嗓子。
+
+    优先级：项目圣经里这个角色的音色 > `--voice` > 默认。
+
+    同一个人每集必须用同一个声音 —— 界面上换脸比换声音更刺眼，但观众对
+    声音的记忆更持久，第 3 集换了音色会直接被说成"配音换人了"。
+    说话人从台词行首解析（`苏蔓：（低声）不对。` -> `苏蔓`）；
+    解析不出来就退回全局音色。
+    """
+    fallback = str(ctx.run.meta.get("voice") or "female_01")
+    if ctx.project is None:
+        return fallback
+    speaker = media.speaker_of(shot.dialogue)
+    if not speaker:
+        return fallback
+    return ctx.project.voice_for(speaker, fallback)
 
 
 def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
@@ -30,7 +49,7 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
     if dest.exists() and dest.stat().st_size > 0 and not ctx.force:
         return ("skipped", {}, str(dest))
     try:
-        voice = ctx.run.meta.get("voice", "female_01")
+        voice = _voice_for(ctx, shot)
         usage = call_with_retry(
             ctx.bundle.audio.tts, shot.dialogue, dest,
             voice=voice, speed=1.0, shot_label=shot.label,

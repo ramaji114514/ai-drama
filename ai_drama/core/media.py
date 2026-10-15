@@ -477,6 +477,19 @@ def speech_text(line: str) -> str:
     return out or (line or "").strip()
 
 
+def speaker_of(line: str) -> str:
+    """台词行首的说话人（``苏蔓：（低声）不对。`` -> ``苏蔓``），没有则空串。
+
+    用来给同一个角色固定同一个音色（见 stages/stage05_audio.py）。
+    注意匹配的是``说话人：``这个形状，所以 ``没有前缀的台词`` 返回空串 ——
+    它自然地被当成"speaker 字段缺失"，退回全局音色，而不是把半句话当人名。
+    """
+    m = _SPEAKER_PREFIX.match(line or "")
+    if not m:
+        return ""
+    return m.group(0).rstrip("：: \t").strip()
+
+
 def _ass_time(seconds: float) -> str:
     cs = max(0, int(round(seconds * 100)))
     h, cs = divmod(cs, 360_000)

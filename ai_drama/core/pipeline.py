@@ -19,13 +19,15 @@ from typing import Any, Dict, List, Optional
 from . import paths
 from .context import Ledger, StageContext, StageReport
 from .models import STAGES, Episode, Run, new_id
+from .project import Project, load as load_project
 from .store import Store
 
 
 class Pipeline:
     def __init__(self, root: Path, store: Store, bundle, *, budget_usd: float = 0.0,
                  concurrency: int = 3, force: bool = False, verbose: bool = True,
-                 strict_qc: bool = True, subtitles: bool = True):
+                 strict_qc: bool = True, subtitles: bool = True,
+                 project_id: Optional[str] = None):
         self.root = Path(root)
         self.store = store
         self.bundle = bundle
@@ -35,10 +37,18 @@ class Pipeline:
         self.verbose = verbose
         self.strict_qc = strict_qc
         self.subtitles = subtitles
+        #: 这一步跑的是哪部剧（None = 单集模式，角色每集重新生成）。
+        self.project_id = project_id
 
     # ————————————————————————————————————--- 启动
 
-    def start(self, idea: str, **meta: Any) -> Run:
+    def start(self, idea: str, project_id: Optional[str] = None, **meta: Any) -> Run:
+        pid = project_id or self.project_id
+        if pid:
+            meta["project_id"] = pid
+            # 集号在**建 run 之前**算：episode_no() 数的是库里已有的 run，
+            # 建完再算会把自己也算进去，于是第 1 集显示成"第 2 集"。
+            meta.setdefault("episode_no", self.episode_no(pid))
         run_id = new_id("run")
         out_dir = paths.run_dir(self.root, run_id)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -46,6 +56,19 @@ class Pipeline:
                   out_dir=str(out_dir), meta=meta)
         self.store.create_run(run)
         return run
+
+    def episode_no(self, project_id: str) -> int:
+        """这部剧已经跑过几次 -> 这一次是第几集。
+
+        从 runs 表数出来而不是在 project.json 里记一个计数器：
+        计数器会跟真实 run 列表不一致（失败重跑、手工删 run），
+        而"第几集"只是个显示用的编号，不值得为它引入一个会失真的状态。
+        """
+        n = 0
+        for r in self.store.list_runs():
+            if (r.meta or {}).get("project_id") == project_id:
+                n += 1
+        return n + 1
 
     # ————————————————————————————————————--- 执行
 
@@ -60,11 +83,26 @@ class Pipeline:
             run_id=run.run_id, idea=run.idea
         )
 
+        # 这部剧的角色圣经。**读坏了要让整条流水线停下**，不能静默降级成
+        # "每集重新造角色" —— 那样第 2 集就换脸，而且要跑到成片才看得出来。
+        # 没有文件（单集模式）是正常用法，load() 返回 None。
+        pid = (run.meta or {}).get("project_id") or self.project_id
+        project: Optional[Project] = None
+        if pid:
+            project = load_project(self.root, pid)
+            if project is None:
+                raise FileNotFoundError(
+                    f"project 不存在：{pid}。"
+                    f"（{paths.project_json(self.root, pid)} 没找到）"
+                    f"要么先 `run.py project new`，要么去掉 --project。"
+                )
+
         ctx = StageContext(
             run=run, episode=episode, store=self.store, bundle=self.bundle,
             root=self.root, ledger=ledger, force=self.force,
             concurrency=self.concurrency, verbose=self.verbose,
             strict_qc=self.strict_qc, subtitles=self.subtitles,
+            project=project,
         )
 
         self.store.update_run(run.run_id, state="running")

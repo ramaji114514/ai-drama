@@ -129,16 +129,32 @@ def run(ctx: StageContext) -> StageReport:
     # 顺序很重要：参考图得先存在，提示词才能**点名**它。反过来写的话，
     # 第一次跑时 ch.ref_image 全是空的，参考锁定段会静默地一个字都不写 ——
     # 而那正是"参考图传了也漂"的成因。
+    #
+    # 有项目时，定妆照存在**项目**目录并跨集复用同一个文件。这才是跨集
+    # 一致性的硬保证：第 40 集的脸和第 1 集是同一张图，而不是"提示词写得像"。
+    pid = ctx.project.project_id if ctx.project is not None else ""
     portraits = 0
+    reused = 0                     # 项目里已有、这一集直接复用的
     warned_no_t2i = False          # 只在第一次缺 provider 时提示，别每个角色刷一行
     for ch in ep.characters:
         if not ch.anchor_prompt:
             ch.anchor_prompt = f"{ep.style}，人物定妆照，{ch.desc}"
-        dest = paths.portrait(ctx.root, ctx.run.run_id, ch.name)
-        if dest.exists() and not ctx.force:
-            ch.ref_image = str(dest)
+        run_level = paths.portrait(ctx.root, ctx.run.run_id, ch.name)
+        canon = paths.project_portrait(ctx.root, pid, ch.name) if pid else None
+
+        # 1) 项目里已经有了 -> 直接复用。**不重新生成**：既不花钱，也不可能漂。
+        if canon is not None and canon.exists() and canon.stat().st_size > 0 and not ctx.force:
+            ch.ref_image = str(canon)
+            ctx.project.remember_portrait(ch.name, str(canon))   # type: ignore[union-attr]
+            reused += 1
+            continue
+
+        # 2) 单集模式的退路：本 run 里已经生成过
+        if canon is None and run_level.exists() and not ctx.force:
+            ch.ref_image = str(run_level)
             report.skipped += 1
             continue
+
         if not ctx.bundle.t2i:
             if not warned_no_t2i:
                 warned_no_t2i = True
@@ -147,17 +163,27 @@ def run(ctx: StageContext) -> StageReport:
                     "接真图像模型时建议单独配一个，定妆照和人像一致性关系很大。"
                 )
             continue
+        # 项目模式下**不拿 run 级的那张顶替**：那一张可能是"项目建立之前"
+        # 由模型自己写的外貌生成的，脸未必对。宁可付一次生成费，也不要把
+        # 一张可能是错的脸固化进圣经 —— 固化之后会一路错到第 100 集。
+        dest = canon if canon is not None else run_level
         try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             usage = ctx.bundle.t2i.png(ch.anchor_prompt, dest, size=(720, 1280),
                                        shot_label=f"portrait/{ch.name}")
             ctx.ledger.add(usage, stage="storyboard")
             report.money += float(usage.get("money") or 0)
             ch.ref_image = str(dest)
+            if ctx.project is not None:
+                ctx.project.remember_portrait(ch.name, str(dest))
             portraits += 1
         except Exception as exc:                      # noqa: BLE001
             # 定妆照失败不应该让整片停摆，但必须留痕
             report.notes.append(f"定妆照失败 {ch.name}: {type(exc).__name__}: {exc}")
             report.failed += 1
+
+    if ctx.project is not None:
+        ctx.save_project()
 
     # ————————————————————————————————-- 提示词与时长
     max_refs = int(getattr(caps_of(ctx.bundle.image), "max_ref_images", 1) or 1)
@@ -190,6 +216,8 @@ def run(ctx: StageContext) -> StageReport:
     report.processed = changed
     report.artifacts["episode"] = str(ep_json)
     head = f"定稿 {len(ep.shots)} 镜 / 总时长 {ep.total_duration}s / 定妆照 {portraits} 张"
+    if reused:
+        head += f"（另有 {reused} 张沿用项目里的，未重复生成）"
     lock = f"参考锁定 {locked}/{len(ep.shots)} 镜（provider 单镜最多 {max_refs} 张参考图）"
     report.notes.append(head)
     report.notes.append(lock)

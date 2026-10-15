@@ -5,6 +5,9 @@
 断点续跑也就无从谈起。
 
 目录结构：
+    projects/<project_id>/           跨集共用的东西（一部 60 集的片子只有一个）
+        project.json                 角色圣经（人工可编辑）
+        portraits/<角色名>.png        定妆照 —— 复用同一张是脸不漂的唯一硬保证
     runs/<run_id>/
         episode.json          分镜定稿（人工可编辑，改完可 resume）
         character_<name>.png  定妆照
@@ -25,6 +28,38 @@ from pathlib import Path
 from typing import List
 
 
+def safe_name(name: str) -> str:
+    """把角色名变成能当文件名的形式。
+
+    中文名**原样保留**（`isalnum()` 对汉字为真），只滤掉路径分隔符之类的字符，
+    这样打开目录时看到的就是 `苏蔓.png` 而不是一串编号。
+    """
+    return "".join(ch for ch in (name or "") if ch.isalnum() or ch in "-_") or "char"
+
+
+def projects_root(root: Path) -> Path:
+    return Path(root) / "projects"
+
+
+def project_dir(root: Path, project_id: str) -> Path:
+    return projects_root(root) / project_id
+
+
+def project_json(root: Path, project_id: str) -> Path:
+    """角色圣经。放**项目**目录而不是 run 目录：它是全剧共用的设定，
+    跟着单次 run 走就等于每集重新投胎。"""
+    return project_dir(root, project_id) / "project.json"
+
+
+def project_portrait(root: Path, project_id: str, name: str) -> Path:
+    """角色在**项目**里的定妆照。
+
+    跨集一致性靠的不是"提示词写得像"，而是**每一集都复用同一个文件**。
+    只要这张图还在，第 40 集的脸和第 1 集就是同一张。
+    """
+    return project_dir(root, project_id) / "portraits" / f"{safe_name(name)}.png"
+
+
 def run_dir(root: Path, run_id: str) -> Path:
     return Path(root) / "runs" / run_id
 
@@ -42,19 +77,25 @@ def episode_json(root: Path, run_id: str) -> Path:
 
 
 def portrait(root: Path, run_id: str, name: str) -> Path:
-    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_") or "char"
+    safe = safe_name(name)
     return run_dir(root, run_id) / f"character_{safe}.png"
 
 
-def portrait_variants(root: Path, run_id: str, name: str) -> List[Path]:
+def portrait_variants(root: Path, run_id: str, name: str,
+                      project_id: str = "") -> List[Path]:
     """这个角色名下**所有**的定妆照文件，按文件名排序。
 
     为什么会有多张：重跑、换模型重渲、人工替换都会留下旧文件。多张脸
     并存时"哪张算准"必须有个明确说法（见 core/faces.py），
     否则后续十几集用哪张就变成了看目录顺序。
+
+    有项目时，项目的定妆照目录**也**要算进来 —— 项目模式下这一集用的
+    就是项目里那张，只扫 run 目录会得出"没有定妆照"这种明显错误的结论。
     """
-    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_") or "char"
+    safe = safe_name(name)
     out = sorted(run_dir(root, run_id).glob(f"character_{safe}*.png"))
+    if project_id:
+        out += sorted((project_dir(root, project_id) / "portraits").glob(f"{safe}*.png"))
     return [p for p in out if p.is_file()]
 
 
