@@ -239,6 +239,65 @@ class YourVision(VisionProvider):
 自检：`python run.py doctor` 会单列一行 `vision`。没配时打印的是
 "默认关闭"而不是"已关闭"—— 这两句话的区别是"你没开"和"你关掉了它"。
 
+## 音效（第八种形态）
+
+和前七种都不同：它的粒度是**每镜 0-3 条**，而不是"每句一条"或"全片一条"。
+
+```python
+from ..providers.base import ProviderError, SfxProvider
+from ..providers.registry import register
+
+
+@register("your_vendor", "sfx")
+class YourSfx(SfxProvider):
+    name = "your_vendor-sfx"
+
+    def make(self, cue, dest, *, duration=1.5, scene=""):
+        try:
+            audio = post("/v1/sound-effects", json={
+                "text": cue,                 # 一句人话："门被撞开"
+                "duration_seconds": duration,
+            })
+        except Exception as exc:
+            raise ProviderError(f"音效合成失败：{exc}", retryable=True,
+                                provider=self.name) from exc
+        dest.write_bytes(audio)
+        return {
+            "unit": "cue", "amount": 1,
+            "money": 0.01,                   # 按条计费，如实报账
+            "provider": self.name, "stage": "audio",
+        }
+```
+
+然后 `AI_DRAMA_SFX=your_vendor`（**默认是关的**，见下）。
+
+### 三条硬要求
+
+1. **`cue` 是一句人话，不是标签。** 分镜阶段写的是"夜雨落在铁皮棚上"这种描述，
+   要不要当检索关键词、还是当生成提示词，你自己决定 —— 但别假设它一定是
+   简短的名词短语。
+2. **时长要够覆盖它出现的那一刻。** 音效比画面短会显得"点到为止"，
+   比画面长会盖住下一镜的声音。骨架给的是 `min(3.0, max(0.6, 镜头时长 * 0.6))`，
+   你可以把它当成上限用。写出来的文件**必须**能解密成普通音频
+   （骨架会拿它进 ffmpeg 的 `amix`）。
+3. **别把音乐当音效。** BGM 是 `AudioProvider.music()` 的活，全片一条。
+   这一形态每条都会真的被调用一次，所以宁可少给几条。
+
+### 为什么它和 `vision` 一样默认关闭
+
+`registry.DEFAULT_OFF_KINDS = ("vision", "sfx")`，但理由完全不同：
+
+| | 默认关的理由 |
+|---|---|
+| `vision` | 一个"假装看过了"的默认检查器会把**没查成洗成通过** |
+| `sfx` | 用量。一集 60 个镜头可能有 40 条，而 BGM 永远 1 条 |
+
+要音效就显式配。分镜里写了音效而没配 provider 时，`stage05` 与 `stage07`
+都会写一条 `[!]` 说明成片里不会有这些声音 —— 缺声音是那种"一切正常"的缺失，
+不写出来就没人会发现。
+
+自检：`python run.py doctor` 会单列一行 `sfx`，并告诉你关掉它意味着什么。
+
 ## 请求字段是配置，不是常量
 
 各家把参考素材放在哪个字段完全不一致（`image` / `image_urls` / `ref_images`…），

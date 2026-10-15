@@ -33,6 +33,7 @@ from .base import (
     LipSyncProvider,
     ProviderCaps,
     ProviderError,
+    SfxProvider,
     T2IProvider,
     TextProvider,
     VideoProvider,
@@ -215,16 +216,18 @@ class DryRunTextProvider(TextProvider):
             shots: List[Dict[str, Any]] = []
             pool = self._scene_shots(si, hero_name, second[0], location, closers[si])
             for oi in range(shots_per_scene):
-                framing, action, line, on_screen = pool[oi % len(pool)]
+                framing, action, line, on_screen, sfx = pool[oi % len(pool)]
                 if oi >= len(pool):
                     # 要求的格数比模板多：复用景别但把动作标注成后续节拍，
                     # 避免出现"两镜一模一样的画面提示词"。
                     action = f"{action}（第 {oi + 1} 个节拍，机位与表演需与前镜区分）"
+                    sfx = []          # 复用节拍就别再复用音效 —— 同一集里"同一声音响两次"听着像 bug
                 shots.append({
                     "order": oi,
                     "framing": framing,
                     "action": action,
                     "dialogue": line,
+                    "sfx": list(sfx),
                     "characters": list(on_screen),
                     "location": location if (si != scene_count - 1 or oi < shots_per_scene - 1) else "桥底-车边",
                 })
@@ -247,37 +250,47 @@ class DryRunTextProvider(TextProvider):
         }
 
     def _scene_shots(self, si: int, hero: str, other: str, location: str,
-                     closer: str) -> List[Tuple[str, str, str, List[str]]]:
-        """返回 (景别, 动作, 台词, **画面里看得见的角色**)。
+                     closer: str) -> List[Tuple[str, str, str, List[str], List[str]]]:
+        """返回 (景别, 动作, 台词, **画面里看得见的角色**, **音效**)。
 
         第四个元素是 `characters` 字段 —— 骨架按它决定拿谁的定妆照锁脸。
         dryrun 是"零配置也能跑通"的参考实现，所以它要把**完整的契约**演出来，
         而不只是把 JSON 填满：空镜是空数组、单人镜只有一个人、
         群戏两个人都在里面。忽略这个字段也能跑，但那一镜就会退化成
         靠名字子串猜（报告里会写出来）。
+
+        第五个元素是 `sfx` 音效（环境声与动作声，**不是**音乐 —— BGM 是
+        全片一条，走单独的字段）。大部分镜头是空数组：每一条音效都是一次
+        真实调用，参考实现不该为了"填满"而示范一种浪费的写法。
         """
         if si == 0:
             return [
-                ("establishing", f"{location}空镜，环境建立，光线偏暗", "", []),
-                ("medium", f"{hero}独自停留，动作细微，像在确认什么", "", [hero]),
-                ("close", f"{hero}的视线突然定住，瞳孔收缩", f"{hero}：（低声）不对。", [hero]),
-                ("extreme_close", closer, "", [hero]),
+                ("establishing", f"{location}空镜，环境建立，光线偏暗", "", [],
+                 ["远处城市的低频嗡鸣"]),
+                ("medium", f"{hero}独自停留，动作细微，像在确认什么", "", [hero], []),
+                ("close", f"{hero}的视线突然定住，瞳孔收缩", f"{hero}：（低声）不对。",
+                 [hero], ["心跳声，一下比一下重"]),
+                ("extreme_close", closer, "", [hero], []),
             ]
         if si == 1:
             return [
-                ("wide", f"{hero}与{other}隔着一张桌子对坐，空间关系紧张", "", [hero, other]),
-                ("medium", f"{other}低头回避视线，手指敲桌面", "", [other]),
+                ("wide", f"{hero}与{other}隔着一张桌子对坐，空间关系紧张", "",
+                 [hero, other], ["椅子腿刮过地面"]),
+                ("medium", f"{other}低头回避视线，手指敲桌面", "", [other],
+                 ["手指敲桌面的轻响"]),
                 ("close", f"{hero}前倾逼问，语气压得很低",
-                 f"{hero}：你到底在瞒我什么？", [hero]),
+                 f"{hero}：你到底在瞒我什么？", [hero], []),
                 ("medium", f"{other}终于抬头，表情松动",
-                 f"{other}：……知道的人，都走了。", [other]),
+                 f"{other}：……知道的人，都走了。", [other], []),
             ]
         return [
-            ("wide", f"{location}，两人距离被骤然拉开，冷风灌进画面", "", [hero, other]),
-            ("medium", f"{hero}后退半步，意识到危险逼近", "", [hero]),
+            ("wide", f"{location}，两人距离被骤然拉开，冷风灌进画面", "",
+             [hero, other], ["风灌进空旷空间的呼啸"]),
+            ("medium", f"{hero}后退半步，意识到危险逼近", "", [hero],
+             ["身后传来一声金属碰撞"]),
             ("close", f"{hero}做出决定的瞬间，呼吸稳定下来",
-             f"{hero}：那就从我开始。", [hero]),
-            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", "", []),
+             f"{hero}：那就从我开始。", [hero], []),
+            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", "", [], []),
         ]
 
 
@@ -618,6 +631,92 @@ class DryRunLipSyncProvider(LipSyncProvider):
             "stage": "lipsync",
             "shot_label": shot_label,
             "note": f"[dryrun] 没有真的改嘴型（{heard}）：只做了无音轨重编码，时长保持 {before:.3f}s",
+        }
+
+
+# ————————————————————————————————————————----
+# 音效
+# ————————————————————————————————————————----
+
+@register("dryrun", "sfx")
+class DryRunSfxProvider(SfxProvider):
+    """占位音效：**真的合成出一段声音，但那段声音不是你说的那个东西。**
+
+    和 dryrun 的其它形态一样，"零成本跑通接线"是它的全部目的：
+    `stage05` 的并发、产物路径、重跑幂等、`stage07` 的混音接线，
+    都需要真的有文件才能验证。
+
+    但它**必须自己说清楚它是什么**：usage 的 note 里会写明"这是按 cue 的哈希
+    合成的一段占位声，不是雨声也不是门声"。一个假装是雨声的占位音比一段
+    明显的噪声更糟 —— 后者你一听就知道没配音效，前者会让人以为音效配好了。
+
+    做法：用 cue 的哈希决定**音色类别**（低频撞击 / 噪声爆发 / 高频滴答 /
+    上升扫频），所以"同一个 cue 每次得到同一种声音"（确定性，可写回归测试），
+    而不同的 cue 听上去不一样 —— 这样混音时能听出"哪一镜有音效"。
+    """
+
+    name = "dryrun-sfx"
+
+    #: 占位音的采样率。低于配音的 44.1k 是为了文件小 —— 这本来就不是成品。
+    SAMPLE_RATE = 22050
+
+    @staticmethod
+    def _shape(cue: str, seconds: float, rate: int) -> List[float]:
+        """按 cue 的哈希生成一段有起有落的波形（纯函数，方便测）。"""
+        import math
+        import random
+
+        seed = int(hashlib.sha1((cue or "").encode("utf-8")).hexdigest()[:8], 16)
+        kind = seed % 4
+        rng = random.Random(seed)
+        n = max(1, int(seconds * rate))
+        base = 90.0 + (seed % 260)        # 不同 cue 的基频不一样
+        out: List[float] = []
+        noise_state = 0.0
+        for i in range(n):
+            t = i / rate
+            env = math.exp(-3.2 * t / max(0.05, seconds))      # 快速衰减
+            if kind == 0:                                      # 低频撞击
+                v = math.sin(2 * math.pi * base * t) * 0.9
+                v += (rng.random() * 2 - 1) * 0.25
+            elif kind == 1:                                    # 噪声爆发（像雨/风）
+                noise_state = noise_state * 0.75 + (rng.random() * 2 - 1) * 0.25
+                v = noise_state * 2.2
+            elif kind == 2:                                    # 高频滴答
+                v = math.sin(2 * math.pi * (base * 9) * t) * 0.8
+                env = math.exp(-26.0 * t)                       # 极短
+            else:                                              # 上升扫频（whoosh）
+                f = base * (1.0 + 5.0 * t / max(0.05, seconds))
+                v = math.sin(2 * math.pi * f * t) * 0.8
+                env = math.sin(math.pi * min(1.0, t / max(0.05, seconds)))
+            out.append(max(-1.0, min(1.0, v * env)))
+        return out
+
+    def make(self, cue: str, dest: Path, *, duration: float = 1.5,
+             scene: str = "") -> Dict[str, Any]:
+        import struct
+        import wave
+
+        seconds = max(0.15, min(2.5, float(duration or 1.5)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        samples = self._shape(cue, seconds, self.SAMPLE_RATE)
+        frames = b"".join(
+            struct.pack("<h", int(max(-1.0, min(1.0, s)) * 14000)) for s in samples
+        )
+        with wave.open(str(dest), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.SAMPLE_RATE)
+            w.writeframes(frames)
+
+        return {
+            "unit": "cue",
+            "amount": 1,
+            "money": round(PRICING["sfx_per_cue"]["default"], 6),
+            "provider": self.name,
+            "stage": "audio",
+            "note": f"[dryrun] 「{cue}」合成的是一段**占位声**"
+                    f"（按文字哈希挑的音色，{seconds:.2f}s），不是它描述的那个声音",
         }
 
 

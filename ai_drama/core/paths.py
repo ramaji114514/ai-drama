@@ -127,6 +127,16 @@ def voice(root: Path, run_id: str, scene_id: str, order: int) -> Path:
     return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_audio.wav"
 
 
+def sfx(root: Path, run_id: str, scene_id: str, order: int, index: int) -> Path:
+    """这一镜第 index 条音效。
+
+    带序号是因为一镜里可以有好几声（"门被撞开" + "雨声"）。它们不合并成一个
+    文件：合并之后就没法单独重跑其中一条、也没法调这一条的响度，
+    而重跑一条音效比重跑一条台词便宜得多。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_sfx{index:02d}.wav"
+
+
 def synced(root: Path, run_id: str, scene_id: str, order: int) -> Path:
     """口型同步后的片段。
 

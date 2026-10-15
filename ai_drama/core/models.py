@@ -91,6 +91,17 @@ class Shot:
     #:   * ``[]``   —— 声明了"画面里没有人"（空镜）-> 谁都不锁，也不许退回去猜
     #:   * 有名字   —— 按这个顺序锁脸
     characters: Optional[List[str]] = None
+
+    #: 这一镜的**音效**（环境声与动作声：雨声、门被撞开、心跳）。
+    #:
+    #: 为什么单独一个字段：音效是"画面之外"的信息，写进画面提示词就等于把它
+    #: 喂给视频模型 —— 而质检里那条 `forbidden_in_visual` 规则正是为此存在的
+    #: （把"音效"写进画面提示词会让模型去**画**一个音箱或一行字）。
+    #: 所以声音必须走自己的字段：台词走 `dialogue`，环境声与动作声走这里。
+    #:
+    #: 空列表是正常的（大部分镜头没有特别的音效）。
+    sfx: List[str] = field(default_factory=list)
+
     updated_at: str = field(default_factory=now_iso)
 
     @property

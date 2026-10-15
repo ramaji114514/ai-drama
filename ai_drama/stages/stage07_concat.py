@@ -145,8 +145,10 @@ def run(ctx: StageContext) -> StageReport:
 
     # ————————————————————————————----- 音画对齐 + 时间轴
     segments: List[Tuple[Path, float]] = []
+    effects: List[Tuple[Path, float]] = []
     cues: List[Tuple[float, float, str]] = []
     timeline_rows: List[Dict[str, object]] = []
+    sfx_missing: List[str] = []
     offset = 0.0
     for _sid, _scene_path, shots, durations in scene_videos:
         for shot, dur in zip(shots, durations):
@@ -160,12 +162,24 @@ def run(ctx: StageContext) -> StageReport:
                 spoken = probe_duration(voice) or dur
                 span = min(dur, max(0.8, spoken + 0.4))
                 cues.append((offset, offset + span, media.speech_text(line)))
+            # 音效和台词走**同一个** offset：它属于这一镜，起止跟着这一镜。
+            # 分开算一遍时间轴就是字幕当初飘掉的同一个错误。
+            shot_sfx: List[str] = []
+            for idx, cue in enumerate(shot.sfx):
+                s_path = paths.sfx(ctx.root, ctx.run.run_id, shot.scene_id,
+                                   shot.order, idx)
+                if s_path.exists() and s_path.stat().st_size > 0:
+                    effects.append((s_path, offset))
+                    shot_sfx.append(cue)
+                else:
+                    sfx_missing.append(f"{shot.label}「{cue}」")
             timeline_rows.append({
                 "scene": shot.scene_id,
                 "shot": shot.label,
                 "start": round(offset, 3),
                 "duration": round(dur, 3),
                 "dialogue": line,
+                "sfx": shot_sfx,
             })
             offset += dur
 
@@ -180,8 +194,14 @@ def run(ctx: StageContext) -> StageReport:
         segments,
         final,
         music=paths.bgm(ctx.root, ctx.run.run_id),
+        effects=effects,
     )
     final_raw.unlink(missing_ok=True)
+
+    if not ctx.bundle.sfx and any(s.sfx for s in ctx.episode.shots):
+        report.notes.append(
+            "[!] 分镜里写了音效，但成片里只有台词和 BGM（没配 sfx provider）"
+        )
 
     # ————————————————————————————----- 字幕
     # SRT 一律写出来（它是交付物：多数平台要的是字幕轨，不是烙在画面上的字），

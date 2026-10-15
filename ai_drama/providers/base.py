@@ -275,6 +275,43 @@ class AudioProvider(abc.ABC):
         """整片 BGM。"""
 
 
+class SfxProvider(abc.ABC):
+    """音效：环境声与动作声（雨声、门被撞开、心跳、玻璃碎）。
+
+    为什么是**单独一个形态**、而不是 `AudioProvider` 上的第三个方法：
+
+      * 它的粒度完全不同。台词与 BGM 是"全片一条 / 每句一条"，
+        音效是"每镜零到三条"—— 一集 60 个镜头可能是 40 次调用，
+        而 BGM 永远只有 1 次。把用量差两个数量级的东西塞进同一个 provider，
+        `doctor` 和成本表都会变得没法读。
+      * 供货方也不是同一家。TTS 与音乐生成是成熟品类，音效（sound effects /
+        foley）通常是另一套 API，甚至是一个本地素材库。
+      * 它是**可选**的：没配音效时台词与 BGM 照样成立，成片只是"很干净"。
+        可选形态必须能被显式关掉并且**关掉时有人说话**（见 registry.OPTIONAL_KINDS）。
+
+    契约只有一条，但很硬：**写出来的文件时长要够覆盖它出现的那一刻**。
+    音效比画面短会显得"点到为止"，比画面长会盖住下一镜的声音。
+    合成器拿不准时宁可比 cue 稍长一点点（拼接阶段会按镜头切）。
+    """
+
+    name = "sfx-base"
+    kind = "sfx"
+
+    @abc.abstractmethod
+    def make(self, cue: str, dest: Path, *, duration: float = 1.5,
+             scene: str = "") -> Usage:
+        """按文字描述合成一条音效，写到 dest。
+
+        `cue` 是一句人话（"门被撞开"、"夜雨落在铁皮棚上"），**不是标签**。
+        实现方要不要把它当成检索关键词、还是当成生成提示词，自己决定；
+        但返回的 usage 必须如实说明"这到底是不是真的音效"——
+        dryrun 那一档会老老实实写"合成的是一段噪声，不是雨声"。
+        """
+
+    def health(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind, "ok": True}
+
+
 class T2IProvider(abc.ABC):
     """纯文生图（不需要参考图）。定妆照用。"""
 
@@ -385,6 +422,7 @@ class Bundle:
         t2i: Optional[T2IProvider] = None,
         lipsync: Optional[LipSyncProvider] = None,
         vision: Optional[VisionProvider] = None,
+        sfx: Optional[SfxProvider] = None,
         catalog: Any = None,
     ):
         self.text = text
@@ -394,6 +432,7 @@ class Bundle:
         self.t2i = t2i
         self.lipsync = lipsync
         self.vision = vision
+        self.sfx = sfx
         #: 模型目录（core.catalog.ModelCatalog）。适配器可以拿它查
         #: 「我这个模型的多长上限、参考素材该放哪个字段」。允许为 None ——
         #: 手搓 bundle 跑测试时不该被迫造一份目录。
@@ -401,7 +440,7 @@ class Bundle:
 
     def all_providers(self) -> List[Any]:
         return [p for p in (self.text, self.image, self.video, self.audio,
-                            self.t2i, self.lipsync, self.vision) if p]
+                            self.t2i, self.lipsync, self.vision, self.sfx) if p]
 
     def report(self) -> List[Dict[str, Any]]:
         out = [p.health() for p in self.all_providers()]
@@ -432,6 +471,9 @@ PRICING: Dict[str, Dict[str, float]] = {
     # 不是生产单价 —— 它便宜，但乘上"每镜都查"就不便宜了，
     # 所以质检里默认不开（见 config/qc_rules.yaml）。
     "vision_per_call": {"default": 0.006},
+    # 音效按**条**算：一集 60 个镜头可能有 40 条，比 BGM（永远 1 条）
+    # 贵两个数量级，所以它默认是**关**的（见 registry.DEFAULT_OFF_KINDS）。
+    "sfx_per_cue": {"default": 0.01},
 }
 
 

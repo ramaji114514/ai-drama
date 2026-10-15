@@ -43,11 +43,13 @@ defaults:
   # 它的开关是 AI_DRAMA_VISION，而那个变量没设时就是关的（见
   # providers/registry.py 的 DEFAULT_OFF_KINDS）。
   vision: dryrun-vision
+  # 同上：这是「打开 sfx 之后默认用哪个」，不代表 sfx 是开着的。
+  sfx: dryrun-sfx
 
 # ———————————————————————————————————————— 模型清单
 #
 # 字段说明：
-#   kind             text / image / video / audio / t2i / lipsync / vision
+#   kind             text / image / video / audio / t2i / lipsync / vision / sfx
 #   provider         由哪个适配器实现（对应 providers/ 里的注册名）
 #   tier             quality / balanced / fast —— 挑模型时的主要依据
 #   cost             1-5 相对档位，用于"这个活了不值得用贵的"这类判断
@@ -233,6 +235,35 @@ models:
     tier: balanced
     cost: 1
     strengths: 中文场景理解好、便宜，适合每镜都过一遍。
+
+  # —————— 音效 ——————
+  #
+  # 环境声与动作声（雨声、门被撞开、玻璃碎）。和"音乐"是两回事：
+  # BGM 是全片一条、走 audio provider 的 music()，这里是每镜 0-3 条。
+  #
+  # [!] 这一形态也**默认是关的**（见 providers/registry.py 的
+  # DEFAULT_OFF_KINDS）。理由是它的用量 —— 一集 60 个镜头可能有 40 条，
+  # 默认打开会让每个已经跑得好好的项目突然多出几十次调用。
+  dryrun-sfx:
+    kind: sfx
+    provider: dryrun-sfx
+    tier: fast
+    cost: 1
+    strengths: 不接任何服务、不花钱。合成的是**占位声**（按文字哈希挑的音色），不是它描述的那个声音 —— usage 里会写明。
+
+  elevenlabs-sfx:
+    kind: sfx
+    provider: ""
+    tier: quality
+    cost: 3
+    strengths: 一条文字描述直接出音效，短促动作声（撞击、脚步）质量最好。
+
+  audiocraft-sfx:
+    kind: sfx
+    provider: ""
+    tier: balanced
+    cost: 1
+    strengths: 开源自托管，便宜。环境声（雨、风、街道）够用。
 
   # —————— 口型同步 ——————
   #

@@ -23,6 +23,12 @@ from ..core.media import estimate_shot_seconds
 from ..core.models import Character, Episode, Scene, Shot
 from ..providers.base import ProviderError
 
+#: 明显是"音乐"而不是"音效"的描述。BGM 是全片一条、走单独的字段，
+#: 混进 sfx 会让每镜都去合成一段弦乐 —— 成本翻倍而且听起来很假。
+_MUSIC_WORDS = re.compile(
+    r"音乐|配乐|背景乐|bgm|BGM|弦乐|钢琴曲|旋律|主题曲|插曲|伴奏|music|soundtrack"
+)
+
 
 def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
                  shots_per_scene: int = 4, scripture: str = "") -> str:
@@ -66,6 +72,7 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
           "framing": "establishing|wide|medium|close|extreme_close",
           "action": "画面里发生什么（纯视觉）",
           "dialogue": "这一镜的台词，没有就留空字符串",
+          "sfx": ["这一镜的**音效**（环境声与动作声），没有就留空数组"],
           "characters": ["这一镜画面里**看得见**的角色名，按重要性排序"],
           "location": "本镜地点"
         }}
@@ -76,8 +83,13 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
 
 重要约束：
 - `action` 和后续的画面提示词里**绝对不能出现台词、音效、音乐、旁白**等听觉信息，
-  画面提示词只描述看得见的东西。
+  画面提示词只描述看得见的东西。把"音效"写进画面提示词会让模型去**画**一个
+  音箱或一行字 —— 质检会判 block。
 - 台词统一放 `dialogue` 字段，它会被送进 TTS，不会进画面模型。
+- `sfx` 放**环境声与动作声**：雨声、门被撞开、玻璃碎、心跳、脚步。
+  写具体的、能听见的声音，一条 2-8 个字（"夜雨落在铁皮棚上"、"门被撞开"）。
+  **不要写音乐**（BGM 是全片一条，走单独的字段），也不要写台词里已经有的东西。
+  大部分镜头可以留空数组 —— 每一条音效都是一次真实调用，别为了填满而填。
 - `characters` 必须是 `characters` 顶层数组里出现过的名字，**逐字照抄**。
   只写画面里真的看得见的人：空镜、只闻其声、画外音都留空数组。
   这个字段决定后续拿谁的定妆照去锁脸，写错不会报错，只会让人看到一张陌生的脸。
@@ -234,6 +246,24 @@ def _names(raw: Any) -> List[str]:
     return out
 
 
+def _cues(raw: Any) -> List[str]:
+    """洗 `sfx`：去重、去空白、丢掉非字符串，并且**砍掉音乐类描述**。
+
+    模型会忍不住把 BGM 写进来（"紧张的低音弦乐"）—— 而 BGM 是全片一条、
+    走单独的字段。放进来会让每镜都去合成一段"弦乐"，成本翻倍且听起来
+    像有人在旁边一直按琴键。这里把明显的音乐描述挑掉，并在报告里说明。
+    """
+    cues = _names(raw)
+    kept: List[str] = []
+    for cue in cues:
+        if _MUSIC_WORDS.search(cue):
+            continue
+        if len(cue) > 24:            # 一句话的描述不是音效，是镜头说明写错了地方
+            continue
+        kept.append(cue)
+    return kept
+
+
 def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
     ep = Episode(
         run_id=ctx.run.run_id,
@@ -271,6 +301,7 @@ def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
                 # 区分"没声明"（None）和"声明画面里没人"（[]）：
                 # 两者都退回去猜的话，"这是一镜空镜"这句话就白说了。
                 characters=_cast_of(sh),
+                sfx=_cues(sh.get("sfx")),
             )
             shot.duration = estimate_shot_seconds(shot)
             scene.shots.append(shot)

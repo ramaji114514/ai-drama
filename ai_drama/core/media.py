@@ -270,20 +270,27 @@ def mix_voice_and_music(
     out: Path,
     *,
     music: Optional[Path] = None,
+    effects: Sequence[Tuple[Path, float]] = (),
     sample_rate: int = 48000,
 ) -> Path:
-    """把每句台词按各自的起始时刻铺到同一条时间轴上，再和画面混流。
+    """把每句台词、每条音效按各自的起始时刻铺到同一条时间轴上，再和画面混流。
 
-    segments = [(音轨文件, 相对全片开头的起始秒), ...]
+    segments = [(台词音轨, 相对全片开头的起始秒), ...]
+    effects  = [(音效音轨, 相对全片开头的起始秒), ...]
 
     这一步是"短剧"和"拼接器"的分水岭：台词必须和对应镜头对齐，
     而不是从头到尾播一遍。骨架把这段对齐逻辑用 ffmpeg filtergraph 实现，
     所以即使换成真 TTS，这段代码也不用改。
+
+    **音效走的是同一套对齐逻辑**（同一个 offset 来源），只是响度不同：
+    台词 1.0、音效 0.55、BGM 0.16。分开调是必须的 —— 音效是"环境"，
+    和台词一样响就会把台词盖掉，而盖掉台词是观众唯一会立刻发现的问题。
     """
     ff = require_ffmpeg()
     out.parent.mkdir(parents=True, exist_ok=True)
-    if not segments:
-        # 没有任何台词：直接和 BGM 混（或原样输出）
+    fx = [(p, o) for p, o in effects if p and Path(p).exists()]
+    if not segments and not fx:
+        # 没有任何台词和音效：直接和 BGM 混（或原样输出）
         if music and music.exists():
             return mux_audio(video, music, out)
         out.write_bytes(video.read_bytes())
@@ -292,6 +299,8 @@ def mix_voice_and_music(
     cmd: List[str] = [ff, "-y", "-i", str(video)]
     for voice, _ in segments:
         cmd += ["-i", str(voice)]
+    for fx_path, _ in fx:
+        cmd += ["-i", str(fx_path)]
     if music and music.exists():
         cmd += ["-i", str(music)]
 
@@ -305,8 +314,17 @@ def mix_voice_and_music(
         )
         labels.append(f"[v{idx}]")
 
+    fx_base = len(segments)
+    for j, (_, offset) in enumerate(fx, start=1):
+        delay_ms = max(0, int(round(offset * 1000)))
+        parts.append(
+            f"[{fx_base + j}:a]aresample={sample_rate},"
+            f"adelay={delay_ms}|{delay_ms},volume=0.55[e{j}]"
+        )
+        labels.append(f"[e{j}]")
+
     if music and music.exists():
-        music_idx = len(segments) + 1
+        music_idx = fx_base + len(fx) + 1
         parts.append(f"[{music_idx}:a]aresample={sample_rate},volume=0.16[bgm]")
         labels.append("[bgm]")
 

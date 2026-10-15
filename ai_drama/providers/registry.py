@@ -12,9 +12,14 @@ stages/ 完全不需要改动 — 这是整个骨架存在的意义。
 
 默认全部走 dryrun：不花钱、不需要任何 API key、能端到端出片。
 
-七种形态：text / image / video / audio / t2i（定妆照）/ lipsync（口型）/
-vision（看一眼已经做出来的画面）。最后三种是可以显式关掉的 ——
-`vision` 关掉意味着**没有任何人看过画面**，质检里那几项会报"没查成"而不是"通过"。
+八种形态：text / image / video / audio / t2i（定妆照）/ lipsync（口型）/
+vision（看一眼已经做出来的画面）/ sfx（音效）。后四种是可以显式关掉的，
+其中两种**默认就是关的**：
+
+  * `vision` 关掉意味着**没有任何人看过画面**，质检里那几项会报"没查成"
+    而不是"通过"。
+  * `sfx`   关掉意味着成片里只有台词和 BGM —— 音效是加分项，
+    而它的用量是每镜 0-3 条，默认打开会把已经很贵的 run 变得更贵。
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from .base import (
     Bundle,
     ImageProvider,
     LipSyncProvider,
+    SfxProvider,
     T2IProvider,
     TextProvider,
     VideoProvider,
@@ -42,6 +48,7 @@ _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
     "t2i": {},
     "lipsync": {},
     "vision": {},
+    "sfx": {},
 }
 
 #: 每个形态由哪个环境变量决定。``doctor`` 与 ``build_bundle`` 共用这一份。
@@ -53,6 +60,7 @@ KIND_ENV: Dict[str, str] = {
     "t2i": "AI_DRAMA_T2I",
     "lipsync": "AI_DRAMA_LIPSYNC",
     "vision": "AI_DRAMA_VISION",
+    "sfx": "AI_DRAMA_SFX",
 }
 
 #: 环境变量没设时用的 provider。
@@ -60,21 +68,28 @@ DEFAULT_PROVIDER = "dryrun"
 
 #: 环境变量没设时**默认关闭**的形态。
 #:
-#: 只有 ``vision``：一个"假装看过了"的默认检查器比没有检查器**更糟** ——
-#: 它会把"没查成"洗成"通过了"，而本项目里 unchecked 与 pass 的区别
-#: 正是质检那一层的全部意义。要检查画面，就必须显式配一个真能看的 provider。
-DEFAULT_OFF_KINDS = ("vision",)
+#: 这里放的都是"不做也不会做出错东西"的形态，反过来 `text/image/video/audio`
+#: 默认 dryrun（零配置也要能端到端出片）。两条理由：
+#:
+#:   * ``vision``：一个"假装看过了"的默认检查器比没有检查器**更糟** ——
+#:     它会把"没查成"洗成"通过了"，而 unchecked 与 pass 的区别正是质检
+#:     那一层的全部意义。
+#:   * ``sfx``：音效是**加分项**，而它的用量是每镜 0-3 条。默认打开的后果是
+#:     每个已经跑得好好的项目突然多出几十次调用、成本表被搅乱、成片里塞满
+#:     一段段占位噪声 —— 而用户从没要求过音效。要音效就显式打开。
+DEFAULT_OFF_KINDS = ("vision", "sfx")
 
 #: 写这些值表示"我明确不要这个形态"。
 #: 只有 ``t2i`` / ``lipsync`` / ``vision`` 关掉是有意义的 —— 另外四个是必须的。
 _OFF_VALUES = ("", "none", "off", "null", "0", "false", "no")
 
-#: 允许被显式关掉的形态。三者都是可选增强：
+#: 允许被显式关掉的形态。这些都是可选增强：
 #:   * ``t2i``     不配就是没有定妆照（参考锁定段会静默失效，所以报告里要写）
 #:   * ``lipsync`` 不配就是成片嘴型没对齐
 #:   * ``vision``  不配就是**画面没被任何人看过** —— 质检里那几项会报"没查成"
+#:   * ``sfx``     不配就是没有音效（还在"台词 + BGM"那一档）
 #: 它们在流水线里缺席时都会被如实报出来，而不是静默跳过。
-OPTIONAL_KINDS = ("t2i", "lipsync", "vision")
+OPTIONAL_KINDS = ("t2i", "lipsync", "vision", "sfx")
 
 
 def kind_env(kind: str) -> str:
@@ -156,7 +171,7 @@ def build_bundle(**overrides: Any) -> Bundle:
     冒出被静默截断的成片。
     """
     made: Dict[str, Any] = {}
-    for kind in ("text", "image", "video", "audio", "t2i", "lipsync", "vision"):
+    for kind in ("text", "image", "video", "audio", "t2i", "lipsync", "vision", "sfx"):
         override = overrides.get(kind)
         if override is not None:
             made[kind] = override
@@ -178,7 +193,7 @@ def build_bundle(**overrides: Any) -> Bundle:
     bundle = Bundle(
         text=made["text"], image=made["image"], video=made["video"],
         audio=made["audio"], t2i=made["t2i"], lipsync=made["lipsync"],
-        vision=made["vision"],
+        vision=made["vision"], sfx=made["sfx"],
     )
     catalog = overrides.get("catalog")
     if catalog is None:
@@ -230,5 +245,5 @@ __all__ = [
     "kind_env", "effective_name", "default_name",
     "KIND_ENV", "DEFAULT_PROVIDER", "DEFAULT_OFF_KINDS", "OPTIONAL_KINDS",
     "TextProvider", "ImageProvider", "VideoProvider", "AudioProvider",
-    "T2IProvider", "LipSyncProvider", "VisionProvider",
+    "T2IProvider", "LipSyncProvider", "VisionProvider", "SfxProvider",
 ]
