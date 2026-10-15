@@ -259,6 +259,18 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0 if result["state"] == "done" else 2
 
 
+def _outstanding_jobs(shot_row: Dict[str, Any]) -> Dict[str, str]:
+    """这一镜有没有"已提交、还没拿到产物"的任务（job_ids 在库里是 JSON 文本）。"""
+    raw = shot_row.get("job_ids")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     load_env()
     store = open_store(args)
@@ -281,6 +293,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"error  {run.error}")
     print(f"镜头   {len(shots)} 个 / 名义时长 {total:.1f}s")
     print(f"状态   " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+    # 已付费但还没取回的任务：这是"钱花出去了、东西还没到手"的唯一可见处。
+    # 不说出来，用户只会觉得"怎么又扣了一次钱"。
+    outstanding = [(s["label"], jobs) for s in shots
+                   if (jobs := _outstanding_jobs(s))]
+    if outstanding:
+        print(f"\n未结算任务   {sum(len(j) for _, j in outstanding)} 个"
+              f"（已提交、还没拿到产物；resume 会先认领它们，不会重复付费）")
+        for label, jobs in outstanding:
+            for part, job in sorted(jobs.items()):
+                print(f"  {label:<16} p{part}  {job}")
+
     print("\n逐镜进度：")
     for s in shots:
         flags = []

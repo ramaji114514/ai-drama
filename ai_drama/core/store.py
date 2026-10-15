@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS shots (
     video       TEXT,
     audio       TEXT,
     synced      TEXT,
+    job_ids     TEXT,
     error       TEXT,
     updated_at  TEXT NOT NULL
 );
@@ -84,6 +85,7 @@ class Store:
     #: 不能在这里偷偷做。
     _ADDED_COLUMNS = (
         ("shots", "synced", "TEXT"),
+        ("shots", "job_ids", "TEXT"),
     )
 
     def __init__(self, db_path: str | Path):
@@ -234,10 +236,29 @@ class Store:
     def update_shot(self, shot_id: str, **fields: Any) -> None:
         if not fields:
             return
+        # job_ids 是 dict（按拆段序号存），落库前转 JSON。放在这里而不是让每个
+        # 调用方自己 dumps，是因为漏一次就是"job_id 又只活在内存里" ——
+        # 那正是这个字段存在的意义。
+        if isinstance(fields.get("job_ids"), (dict, list)):
+            fields["job_ids"] = json.dumps(fields["job_ids"], ensure_ascii=False)
         fields["updated_at"] = now_iso()
         cols = ", ".join(f"{k}=?" for k in fields)
         with self.tx() as c:
             c.execute(f"UPDATE shots SET {cols} WHERE shot_id=?", (*fields.values(), shot_id))
+
+    def shot_jobs(self, shot_id: str) -> Dict[str, str]:
+        """这个镜头已提交但还没结算的任务（{"1": "job-abc"}）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT job_ids FROM shots WHERE shot_id=?", (shot_id,)
+            ).fetchone()
+        if not row or not row["job_ids"]:
+            return {}
+        try:
+            data = json.loads(row["job_ids"])
+        except (ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def pending_shots(self, run_id: str, stage_field: str) -> List[Dict[str, Any]]:
         """返回某个阶段还需要处理的镜头。

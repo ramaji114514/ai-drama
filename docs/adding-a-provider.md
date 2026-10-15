@@ -124,6 +124,39 @@ $env:AI_DRAMA_LIPSYNC="your_vendor"
 明确写出"N 个有台词的镜头被跳过、成片里嘴型没有对齐"。
 要让这件事变成硬门槛，打开 `config/qc_rules.yaml` 的 `require_lipsync`。
 
+### ⑤ `poll` 要能被另一次进程调用
+
+视频是唯一一个"提交出去、等几分钟才回来"的形态，而进程在这几分钟里死掉是
+完全正常的事（Ctrl-C、断电、容器被回收）。所以骨架会把提交成功的 job_id
+**立刻落库**，`resume` 时先拿它去认领，而不是重新提交 —— 否则每崩一次就
+重复付一次钱，而厂商那边其实已经有一份在跑了。
+
+这让 `poll` 多了一层约定：
+
+```python
+def poll(self, job_id, *, timeout=300.0):
+    r = self._get(f"/v1/video/{job_id}")
+    if r.status_code == 404:
+        # **查无此人要返回终局失败，不要抛异常**
+        return ("failed", {}, "job not found")
+    if r.json()["status"] == "failed":
+        return ("failed", {}, r.json().get("reason", ""))
+    if not r.json().get("output"):
+        return ("running", {}, None)
+    return ("succeeded", self._usage(r.json()), None)
+```
+
+两条：
+
+1. `poll` 必须能被一个**从没提交过这个任务**的进程调用（只要厂商侧还能按 id
+   查状态就行）。把状态藏在进程内存里的实现，会让 resume 退化成重复付费。
+2. **查无此人 ≠ 还在跑**。任务过期、被清理、id 根本不存在时返回 `failed`
+   这种终局状态 —— 抛异常会被上层的容错轮询吞掉并一直重试到超时，于是骨架
+   把"任务没了"误判成"还在排队"，这一镜就永远认领不到也渲不出来。
+
+`tests/test_job_ledger.py` 里有三条测试钉住这套行为（含用 `KeyboardInterrupt`
+模拟进程被打断），照它们写就行。
+
 ## 请求字段是配置，不是常量
 
 各家把参考素材放在哪个字段完全不一致（`image` / `image_urls` / `ref_images`…），

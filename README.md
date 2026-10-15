@@ -68,7 +68,7 @@ python run.py run --idea "你的想法"
 | `runs` | 历史 run 列表 |
 | `run --idea "..."` | 跑一条完整流水线 |
 | `resume <run_id>` | 断点续跑（只重跑未完成的） |
-| `status <run_id>` | 逐镜进度 |
+| `status <run_id>` | 逐镜进度（含已提交、还没拿回产物的未结算任务） |
 | `shots <run_id> [--format md\|json]` | 导出分镜表 |
 | `cost <run_id>` | 成本明细（按阶段/按 provider 汇总） |
 | `qc <run_id> [--format text\|json]` | 质检报告（返回码 0=通过 2=不通过 **3=没查成**） |
@@ -102,7 +102,7 @@ ai-drama/
 │   ├── cli.py                  命令行
 │   ├── core/
 │   │   ├── models.py           Shot / Scene / Episode / Character / Run / CostEntry
-│   │   ├── store.py            SQLite 落盘 + 成本记账（断点续跑的基础）
+│   │   ├── store.py            SQLite 落盘 + 成本记账 + 未结算任务台账
 │   │   ├── pipeline.py         八阶段编排 + 质检闸门
 │   │   ├── context.py          StageContext + Ledger（成本闸门）
 │   │   ├── paths.py            产物路径约定（dryrun 与真厂商落在同一处）
@@ -148,7 +148,7 @@ ai-drama/
     └── cost_report.json
 ```
 
-### 十条设计决定（以及为什么）
+### 十一条设计决定（以及为什么）
 
 **1. `submit + poll`，而不是一个阻塞的 `generate()`**
 视频模型动辄排队几分钟。阻塞式接口没法做并发、没法做超时、
@@ -227,6 +227,28 @@ ffprobe 实际时长累加、决定每句台词落在哪一秒的**同一个循�
 最后，`tests/test_subtitles.py` 里有一条**像素级**断言 ——
 "字幕文件生成了"完全不代表画面上有字：滤镜写错、路径没找到、字体缺字，
 ffmpeg 全都不会报错，它只是什么都不画。
+
+**11. 付费提交的任务，id 必须在付钱的那一刻就落盘**
+视频生成是整条链最贵的一环，而"提交成功"到"拿到文件"之间隔着几分钟排队。
+进程在这个窗口里死掉（Ctrl-C、断电、容器被回收）是完全正常的事：
+
+```
+提交成功 -> 排队 -> [进程没了] -> resume -> 又提交一次 -> 又付一次钱
+```
+
+而厂商那边其实已经有一份在跑了。第一版骨架就是这个行为 —— job_id 只活在
+`_render_shot()` 的局部变量里。现在 `store.shot_jobs()` 按拆段序号记着
+"已提交、还没结算"的任务：提交成功后**第一件事是落库**，然后才去轮询；
+`resume` 先认领记录里的任务再决定要不要重新提交。
+
+这里有一个必须区分开的语义：**"厂商说失败"和"我们等不下去"不是一回事**。
+前者是终局（记录要清掉，否则这一镜会被永远认领到一个死任务上、再也渲不出来），
+后者说明任务多半还在跑（记录必须留住，丢掉就等于重复付费）。`_poll_one()`
+因此返回三态 `done` / `failed` / `timeout`，而不是把后两者都塞进 `failed`。
+`tests/test_job_ledger.py` 里用 `KeyboardInterrupt`（`_poll_one` 只吞 `Exception`，
+所以这一下真能穿出去）模拟"进程在等待中被 Ctrl-C"，然后把"resume 不再 submit"
+钉死。CLI 的 `status` 会把未结算任务列出来 —— 否则用户只会觉得
+"怎么又扣了一次钱"。
 
 ---
 
@@ -347,9 +369,9 @@ python -m pytest
 ```
 
 （`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
-就行。加 `-q` 会只剩进度点、看不到 `185 passed` 那行汇总。）
+就行。加 `-q` 会只剩进度点、看不到 `190 passed` 那行汇总。）
 
-覆盖范围（185 个用例）：
+覆盖范围（190 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
@@ -366,6 +388,7 @@ python -m pytest
 | `test_storyboard.py` | 出镜角色按出现位置排序、只对有参考图的角色点名、锁定段在提示词开头、**拥挤镜头被报出来而不是假装锁住** |
 | `test_cli.py` | `doctor` 报的 provider **就是流水线真会用的那个**、配错名字当场报阻断、`.env` 真的会被读、`--help` 里一个子命令都不少 |
 | `test_lipsync.py` | 只送有台词的镜头、输出**无音轨**且时长不变、**两个故意写坏的 provider 被骨架拒收**、已有产物不重复付费、没配 provider 时大声报出来、拼接优先用同步后的片段、`require_lipsync` 开关 |
+| `test_job_ledger.py` | 提交后**开始轮询之前** job_id 已在库里、resume 只认领不重新提交（用 Ctrl-C 模拟进程被打断）、厂商报失败时记录被清掉、超时与失败被区分开、老库自动补列 |
 | `test_subtitles.py` | 剧本行去说话人与表演提示、SRT 时间戳进位、**ASS 的 PlayRes 就是画布尺寸**（字号才是像素）、`{}`/`\` 被转义、**像素级断言字幕真的烧进了画面**、关掉烧录仍留下可用的 SRT |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
@@ -382,6 +405,8 @@ python -m pytest
       三态判定（通过 / 不通过 / **没查成**），严格模式下非 PASS 的 run 不算完成
 - [x] **参考图在提示词里点名**：`core/identity.py` 的参考锁定段 + 排除资产图版式
 - [x] **多张脸谁当准**：`core/faces.py` + `python run.py faces`（纯函数层，可离线测）
+- [x] **已付费任务的台账**：`stage04_video.py` 在提交成功后立刻把 job_id 落库，
+      `resume` 先认领已付费的任务再决定要不要重新提交（见设计决定 11）
 - [x] **字幕**：`stages/stage07_concat.py` 在算音画对齐的同一个循环里生成字幕，
       烧录走自写的 ASS（字号是真实像素），同时留下 `timeline.json` 与 `subtitles.srt`
 - [x] **口型同步**：`stages/stage06_lipsync.py` + `LipSyncProvider`（第六种形态）。

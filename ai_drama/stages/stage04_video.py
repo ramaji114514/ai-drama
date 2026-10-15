@@ -11,6 +11,10 @@
     这样磁盘上永远不会出现"半个 mp4"导致下次 resume 误判已完成。
   * **幂等**。clip 已存在就跳过，所以中断后重跑只补缺失的镜头。
   * **按 provider 上限拆分**（见下）。这是骨架接真厂商后第一个会踩的坑。
+  * **提交成功的 job_id 立刻落库**。从"提交"到"拿到文件"常常隔着几分钟排队，
+    而进程在这个窗口里死掉（Ctrl-C、断电、容器被回收）是完全正常的事。
+    job_id 只活在内存里的话，resume 会重新提交、再付一次钱，而厂商那边
+    其实已经有一份在跑了。落库之后 resume 会先认领它，见 _render_shot()。
 
 # 关于拆分：为什么一个镜头会渲成多段
 
@@ -36,6 +40,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -91,7 +96,15 @@ def _poll_one(ctx: StageContext, job_id: str, *, timeout: float = 900.0
               ) -> Tuple[str, Dict[str, Any], str]:
     """轮询到出片。返回 (状态, usage, 说明)。
 
-    注意这里对 poll 的异常是**容错继续**而不是直接失败 ——
+    状态有三种，**"厂商说失败"和"我们等不下去"必须分开**：
+
+      * ``done``    —— 拿到产物
+      * ``failed``  —— 厂商明确说这个任务没成。终局，job_id 可以扔掉。
+      * ``timeout`` —— 我们等不下去了，但**任务很可能还在厂商那边排队或渲染**。
+        这时候把 job_id 丢掉，下次 resume 就会重新提交、再付一次钱；
+        所以调用方必须留住它，见 _render_shot()。
+
+    对 poll 的异常是**容错继续**而不是直接失败 ——
     一次网络抖动不该让你重跑一个已经排队 3 分钟的任务。
     """
     started = time.time()
@@ -108,7 +121,23 @@ def _poll_one(ctx: StageContext, job_id: str, *, timeout: float = 900.0
         if state == "failed":
             return ("failed", {}, last_err or "provider reported failure")
         time.sleep(1.5)
-    return ("failed", {}, last_err or f"timeout after {timeout:.0f}s")
+    return ("timeout", {}, last_err or f"timeout after {timeout:.0f}s")
+
+
+def _recover_timeout(shot: Shot) -> float:
+    """resume 时去认领一个"上次提交过、还没等到"的任务，等多久。
+
+    默认比正常轮询短得多：这是**恢复**而不是渲染，绝大多数情况下任务要么
+    早跑完了（一问就有），要么早就没了（一问就报错）。为一个可能已经不存在
+    的任务把整条流水线卡 15 分钟，比重新提交还贵。
+    """
+    raw = (os.environ.get("AI_DRAMA_RECOVER_TIMEOUT") or "").strip()
+    if raw:
+        try:
+            return max(5.0, float(raw))
+        except ValueError:
+            pass
+    return 180.0
 
 
 def _cleanup_parts(ctx: StageContext, shot: Shot) -> None:
@@ -150,10 +179,44 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
     existing = {p: p for p in paths.clip_parts(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)}
     part_usages: List[Dict[str, Any]] = []
 
+    # 已提交但还没结算的任务（按段号）。**从库里读，不从内存读** ——
+    # 这个字段的全部意义就是跨进程活着。见 store.shot_jobs()。
+    job_ids = ctx.store.shot_jobs(shot.shot_id)
+
     for idx, duration in enumerate(plan, start=1):
         part_path = paths.clip_part(ctx.root, ctx.run.run_id, shot.scene_id, shot.order, idx)
         if part_path in existing and part_path.stat().st_size > 0 and not ctx.force:
             continue
+        key = str(idx)
+
+        # ———— 先认领上一次已经付费提交的任务（这是省钱的那一步）
+        recorded = job_ids.get(key)
+        if recorded and not ctx.force:
+            status, usage, info = _poll_one(ctx, recorded,
+                                            timeout=_recover_timeout(shot))
+            if status == "done" and Path(info).exists():
+                try:
+                    _move_into_place(Path(info), part_path)
+                except OSError as exc:
+                    ctx.heal_shot(shot, exc)
+                    return ("failed", _merge_usage(part_usages), f"落盘失败：{exc}")
+                if usage:
+                    part_usages.append(usage)
+                job_ids.pop(key, None)
+                ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
+                continue
+            if status == "timeout":
+                # 还在跑。**保留记录**，这一镜先算失败，下次 resume 再来取 ——
+                # 重新提交会再付一次钱，而那份产物已经在路上了。
+                msg = (f"p{idx}/{total}: 上次提交的任务 {recorded} 还在处理中（{info}），"
+                       f"没有重新提交（重新提交会再付一次钱）。"
+                       f"稍后再 resume 就能把它取回来。")
+                ctx.store.update_shot(shot.shot_id, state="running", error=msg[:800])
+                return ("failed", _merge_usage(part_usages), msg)
+            # 厂商明确说失败 / 任务已经查无此人：记录作废，下面重新提交
+            job_ids.pop(key, None)
+            ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
+
         try:
             job_id = _submit_one(ctx, shot, idx, total, duration, part_path)
         except Exception as exc:                      # noqa: BLE001
@@ -161,20 +224,39 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
             ctx.heal_shot(shot, exc)
             return ("failed", {}, f"submit p{idx}/{total}: {type(exc).__name__}: {exc}")
 
-        ctx.store.update_shot(shot.shot_id, state="running", error=None)
+        # **提交成功后第一件事就是落库**，然后才去轮询。
+        # 中间那段排队时间（真厂商里常常几分钟起步）是进程最可能被打断的窗口：
+        # 之前 job_id 只活在这个函数的内存里，一断就没了，下次 resume 会重新提交、
+        # 再付一次钱，而厂商那边其实已经有一份在跑了。
+        job_ids[key] = job_id
+        ctx.store.update_shot(shot.shot_id, state="running", error=None,
+                              job_ids=job_ids)
         tmp = part_path.with_suffix(".part.mp4")
         status, usage, info = _poll_one(ctx, job_id)
         if usage:
             part_usages.append(usage)
         if status != "done":
-            _cleanup_parts(ctx, shot)
-            msg = f"p{idx}/{total}: {info}"
+            if status == "timeout":
+                # 等不下去而已，任务大概率还在跑 —— 留住 job_id 下次再认领。
+                # 而且**不清理已完成的分段**：那些是已经付过钱、完整可用的文件，
+                # 删掉就等于保证下次再付一遍。_cleanup_parts 的理由是"半套分段
+                # 拼不出正确时长"，那针对的是"这段已经没救了"的情况，不是这里。
+                msg = (f"p{idx}/{total}: {info}；任务 {job_id} 可能还在厂商那边跑，"
+                       f"已记下它，resume 时会先认领而不是重新提交")
+            else:
+                msg = f"p{idx}/{total}: {info}"
+                job_ids.pop(key, None)
+                ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
+                _cleanup_parts(ctx, shot)
             ctx.store.update_shot(shot.shot_id, state="failed", error=msg[:800])
             return ("failed", _merge_usage(part_usages), msg)
         if not Path(info).exists():
+            # 厂商说成功但文件不在：这是**终局**，留 job_id 没有意义
+            job_ids.pop(key, None)
             _cleanup_parts(ctx, shot)
             msg = f"provider 返回成功但产物不存在：{info}"
-            ctx.store.update_shot(shot.shot_id, state="failed", error=msg)
+            ctx.store.update_shot(shot.shot_id, state="failed", error=msg,
+                                  job_ids=job_ids)
             return ("failed", _merge_usage(part_usages), msg)
         try:
             _move_into_place(Path(info), part_path)
@@ -182,6 +264,9 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
             _cleanup_parts(ctx, shot)
             ctx.heal_shot(shot, exc)
             return ("failed", _merge_usage(part_usages), f"落盘失败：{exc}")
+        # 这一段已经落盘，任务结算完毕
+        job_ids.pop(key, None)
+        ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
 
     # ———————————————— 拼段
     # 拼段的工作目录必须**按镜头分开**。
@@ -221,7 +306,8 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
         ctx.store.update_shot(shot.shot_id, state="failed", error=msg)
         return ("failed", _merge_usage(part_usages), msg)
 
-    ctx.store.update_shot(shot.shot_id, state="done", video=str(dest), error=None)
+    ctx.store.update_shot(shot.shot_id, state="done", video=str(dest), error=None,
+                          job_ids={})
     return ("done", _merge_usage(part_usages), str(dest))
 
 
