@@ -39,11 +39,15 @@ defaults:
   video: dryrun
   audio: cosyvoice
   lipsync: dryrun
+  # 注意：这里写的是"打开 vision 之后默认用哪个模型"，**不代表 vision 是开着的**。
+  # 它的开关是 AI_DRAMA_VISION，而那个变量没设时就是关的（见
+  # providers/registry.py 的 DEFAULT_OFF_KINDS）。
+  vision: dryrun-vision
 
 # ———————————————————————————————————————— 模型清单
 #
 # 字段说明：
-#   kind             text / image / video / audio / t2i / lipsync
+#   kind             text / image / video / audio / t2i / lipsync / vision
 #   provider         由哪个适配器实现（对应 providers/ 里的注册名）
 #   tier             quality / balanced / fast —— 挑模型时的主要依据
 #   cost             1-5 相对档位，用于"这个活了不值得用贵的"这类判断
@@ -200,6 +204,35 @@ models:
     tier: balanced
     cost: 2
     strengths: 中文配音自然，音色库大。快速起量用。
+
+  # —————— 视觉校验 ——————
+  #
+  # 这一形态**不生产任何东西**：它只负责"看一眼已经做出来的画面，然后说话"。
+  # 骨架用它跑两项质检（画面上有没有字、人像不像定妆照），两项都默认关 ——
+  # 因为每查一镜就是一次调用，60 集 × 每集 20 镜 = 1200 次。
+  #
+  # [!] 它**默认是关的**，和别的形态不一样：一个"假装看过了"的默认检查器
+  # 会把"没查成"洗成"通过了"。要查画面就必须显式配一个真能看的。
+  dryrun-vision:
+    kind: vision
+    provider: dryrun-vision
+    tier: fast
+    cost: 1
+    strengths: 不做任何识别。配了它只会把校验记成「没查成」—— 这是刻意的。
+
+  gpt-5-vision:
+    kind: vision
+    provider: ""
+    tier: quality
+    cost: 3
+    strengths: 细节判断稳，中文字也能读出来。查画面的首选。
+
+  qwen-vl-max:
+    kind: vision
+    provider: ""
+    tier: balanced
+    cost: 1
+    strengths: 中文场景理解好、便宜，适合每镜都过一遍。
 
   # —————— 口型同步 ——————
   #

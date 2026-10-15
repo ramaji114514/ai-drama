@@ -154,13 +154,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         optional = kind in registry.OPTIONAL_KINDS
         if not name:
             if optional:
-                # 可选形态被显式关掉是合法的，但**后果要说清楚** ——
-                # "定妆照跳过"和"嘴型没对上"都不是能从别处看出来的事。
+                # 可选形态被关掉是合法的，但**后果要说清楚** ——
+                # "定妆照跳过"、"嘴型没对上"、"画面没人看过"都不是能从别处看出来的事。
                 why = {
                     "t2i": "定妆照会被跳过，参考锁定会整段失效",
                     "lipsync": "成片里嘴型不会对齐",
+                    "vision": "画面不会被任何人看过，质检里那几项只能报「没查成」",
                 }.get(kind, "这一步会被跳过")
-                print(f"  [!] {kind:<7} {setting} -> 已关闭（可选形态）  —— {why}")
+                if raw is None and kind in registry.DEFAULT_OFF_KINDS:
+                    # 默认关闭 ≠ 用户关掉了它。说"已关闭"会让人以为是自己干的。
+                    print(f"  [ ] {kind:<7} {setting} -> 默认关闭（{why}）；"
+                          f"要打开就设 {env_key}=<能看图的 provider>")
+                else:
+                    print(f"  [!] {kind:<7} {setting} -> 已关闭（可选形态）  —— {why}")
             else:
                 ok = False
                 print(f"  [X] {kind:<7} {setting} -> 已关闭 —— 但这个形态是必须的")

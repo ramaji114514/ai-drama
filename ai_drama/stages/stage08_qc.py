@@ -1,4 +1,4 @@
-"""阶段 8：质检（确定性，不调模型）。
+"""阶段 8：质检。
 
 流水线的**最后一道闸**，也是上一版骨架里完全缺失的一环。
 
@@ -12,6 +12,16 @@
     * **听觉信息有没有混进画面提示词**（参考项目的概念性错误，见下）
     * 关键帧 / 片段 / 配音是不是真的都在磁盘上
     * 要不要把"嘴型没同步"也当成不通过（`require_lipsync`）
+
+上面这些**不调模型**（`core/qc.py` 是纯函数、离线可测）。另有两条
+必须看图才能判的，由 `core/vision_qc.py` 负责，**默认关闭**：
+
+    * 画面里有没有文字（`require_no_text`）
+    * 画面里的人像不像定妆照（`require_identity`）
+
+它们的结果并进**同一份** `QcReport` —— 一份报告写"block 0"，另一份文件里
+写着"画面里有字"，等于没查。没有配 vision provider 时它们记成
+`unchecked`（没查成），**不是通过**。
 
 # 为什么"素材在不在"这一项是 BLOCK
 
@@ -39,7 +49,7 @@ from typing import Any, List, Tuple
 from ..core import paths
 from ..core.context import StageContext, StageReport
 from ..core.qc import Finding, QcChecker, QcRules, QcState, Severity, rules_path
-from ..core.models import Shot
+from ..core.models import CostEntry, Shot
 
 
 def _make_asset_checker(ctx: StageContext):
@@ -63,6 +73,94 @@ def _make_asset_checker(ctx: StageContext):
         return (not missing), "、".join(missing)
 
     return check
+
+
+def _vision_checks(ctx: StageContext, report: StageReport, qc: Any,
+                   rules: QcRules) -> None:
+    """跑需要模型的检查，并把结论并进同一份报告。
+
+    三条刻意的做法：
+
+    1. **结论并进同一份 QcReport，而不是另发一份。** 一份报告里写着
+       "block 0 / warn 0"，另一份文件里写着"画面里有字"，等于没查。
+       三态汇总（`QcReport.state`）已经处理好了优先级，直接给它 Finding 就行。
+    2. **provider 缺席 = 没查成，不是通过。** 这是整个 vision 层唯一重要的事。
+    3. **花的钱要记账。** 每次调用都是真金白银，走和别处一样的 ledger。
+
+    关掉时**什么都不说**（不产出 Finding）—— "没开这项检查"和"查了没查成"
+    是两码事，后者要拦片子，前者只是没做。这一点和 qc.py 里
+    "只有 note 没有 unchecked = 配置里就没开"是同一条规矩。
+    """
+    want_text = rules.require_no_text
+    want_identity = rules.require_identity
+    if not (want_text or want_identity):
+        return
+
+    vision = getattr(ctx.bundle, "vision", None)
+    if vision is None:
+        for rule, sev in (("vision-no-text", rules.severity_no_text),
+                          ("vision-identity", rules.severity_identity)):
+            if (rule == "vision-no-text") != bool(want_text):
+                continue
+            qc.findings.append(Finding(
+                rule=rule, severity=sev, unchecked=True,
+                message="要查画面，但没配 vision provider —— 画面没有被任何人看过",
+                suggestion="设 AI_DRAMA_VISION=<能看图的 provider>，"
+                           "或者把 config/qc_rules.yaml 里这一项关掉",
+            ))
+        report.notes.append(
+            "[!] qc_rules.yaml 里开了画面校验，但 AI_DRAMA_VISION 没配 —— "
+            "这两项记成「没查成」（不算通过）"
+        )
+        return
+
+    from ..core.vision_qc import check_identity, check_no_text
+
+    total_money = 0.0
+    calls = 0
+    if want_text:
+        findings, money, stats = check_no_text(
+            vision, ctx.root, ctx.run.run_id, ep_shots(ctx),
+            max_checks=rules.vision_max_checks, severity=rules.severity_no_text,
+        )
+        qc.findings.extend(findings)
+        total_money += money
+        calls += stats["checked"] + stats["unchecked"]
+        report.notes.append(
+            f"画面文字检查：{stats['checked']} 镜查过 / {stats['failed']} 镜有字"
+            f" / {stats['unchecked']} 镜没查成"
+        )
+    if want_identity:
+        findings, money, stats = check_identity(
+            vision, ctx.episode, ctx.root, ctx.run.run_id,
+            max_checks=rules.vision_max_checks,
+            pass_score=rules.identity_pass_score,
+            severity=rules.severity_identity,
+        )
+        qc.findings.extend(findings)
+        total_money += money
+        calls += stats["checked"] + stats["unchecked"]
+        report.notes.append(
+            f"人物一致性检查：{stats['checked']} 镜查过 / {stats['failed']} 镜不像"
+            f" / {stats['unchecked']} 镜没查成"
+        )
+
+    if total_money:
+        # 走和别处一样的账：provider 只报告花了多少，落盘由 store 统一做。
+        report.money += total_money
+        report.notes.append(f"画面校验花费 ${total_money:.4f}")
+        try:
+            ctx.store.add_cost(CostEntry(
+                run_id=ctx.run.run_id, stage="qc",
+                provider=getattr(vision, "name", "vision"),
+                unit="call", amount=float(calls), money=total_money,
+            ))
+        except Exception as exc:                      # noqa: BLE001
+            report.notes.append(f"[!] 画面校验的费用没记上：{type(exc).__name__}: {exc}")
+
+
+def ep_shots(ctx: StageContext) -> List[Shot]:
+    return list(ctx.episode.shots)
 
 
 def run(ctx: StageContext) -> StageReport:
@@ -92,6 +190,10 @@ def run(ctx: StageContext) -> StageReport:
         assets=_make_asset_checker(ctx),
     )
     qc = checker.check(ep)
+
+    # ———— 需要**看图**的那两项（默认关，见 core/vision_qc.py）
+    _vision_checks(ctx, report, qc, rules)
+
     ctx.qc_report = qc
 
     out = paths.qc_report(ctx.root, ctx.run.run_id)

@@ -11,6 +11,10 @@
 stages/ 完全不需要改动 — 这是整个骨架存在的意义。
 
 默认全部走 dryrun：不花钱、不需要任何 API key、能端到端出片。
+
+七种形态：text / image / video / audio / t2i（定妆照）/ lipsync（口型）/
+vision（看一眼已经做出来的画面）。最后三种是可以显式关掉的 ——
+`vision` 关掉意味着**没有任何人看过画面**，质检里那几项会报"没查成"而不是"通过"。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from .base import (
     T2IProvider,
     TextProvider,
     VideoProvider,
+    VisionProvider,
 )
 
 _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
@@ -36,6 +41,7 @@ _REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
     "audio": {},
     "t2i": {},
     "lipsync": {},
+    "vision": {},
 }
 
 #: 每个形态由哪个环境变量决定。``doctor`` 与 ``build_bundle`` 共用这一份。
@@ -46,18 +52,29 @@ KIND_ENV: Dict[str, str] = {
     "audio": "AI_DRAMA_AUDIO",
     "t2i": "AI_DRAMA_T2I",
     "lipsync": "AI_DRAMA_LIPSYNC",
+    "vision": "AI_DRAMA_VISION",
 }
 
 #: 环境变量没设时用的 provider。
 DEFAULT_PROVIDER = "dryrun"
 
+#: 环境变量没设时**默认关闭**的形态。
+#:
+#: 只有 ``vision``：一个"假装看过了"的默认检查器比没有检查器**更糟** ——
+#: 它会把"没查成"洗成"通过了"，而本项目里 unchecked 与 pass 的区别
+#: 正是质检那一层的全部意义。要检查画面，就必须显式配一个真能看的 provider。
+DEFAULT_OFF_KINDS = ("vision",)
+
 #: 写这些值表示"我明确不要这个形态"。
-#: 只有 ``t2i`` 与 ``lipsync`` 关掉是有意义的 —— 另外四个是必须的。
+#: 只有 ``t2i`` / ``lipsync`` / ``vision`` 关掉是有意义的 —— 另外四个是必须的。
 _OFF_VALUES = ("", "none", "off", "null", "0", "false", "no")
 
-#: 允许被显式关掉的形态。``lipsync`` 是可选增强（不配就是没有口型同步），
-#: 它在流水线里缺席时会被如实报出来，而不是静默跳过。
-OPTIONAL_KINDS = ("t2i", "lipsync")
+#: 允许被显式关掉的形态。三者都是可选增强：
+#:   * ``t2i``     不配就是没有定妆照（参考锁定段会静默失效，所以报告里要写）
+#:   * ``lipsync`` 不配就是成片嘴型没对齐
+#:   * ``vision``  不配就是**画面没被任何人看过** —— 质检里那几项会报"没查成"
+#: 它们在流水线里缺席时都会被如实报出来，而不是静默跳过。
+OPTIONAL_KINDS = ("t2i", "lipsync", "vision")
 
 
 def kind_env(kind: str) -> str:
@@ -65,6 +82,11 @@ def kind_env(kind: str) -> str:
     if kind not in KIND_ENV:
         raise ValueError(f"unknown provider kind: {kind} (expected one of {list(KIND_ENV)})")
     return KIND_ENV[kind]
+
+
+def default_name(kind: str) -> str:
+    """这个形态没设环境变量时用什么；空串表示"默认就是关掉的"。"""
+    return "" if kind in DEFAULT_OFF_KINDS else DEFAULT_PROVIDER
 
 
 def effective_name(kind: str) -> str:
@@ -76,7 +98,7 @@ def effective_name(kind: str) -> str:
     """
     raw = os.environ.get(kind_env(kind))
     if raw is None:
-        return DEFAULT_PROVIDER
+        return default_name(kind)
     raw = raw.strip()
     return "" if raw.lower() in _OFF_VALUES else raw
 
@@ -134,7 +156,7 @@ def build_bundle(**overrides: Any) -> Bundle:
     冒出被静默截断的成片。
     """
     made: Dict[str, Any] = {}
-    for kind in ("text", "image", "video", "audio", "t2i", "lipsync"):
+    for kind in ("text", "image", "video", "audio", "t2i", "lipsync", "vision"):
         override = overrides.get(kind)
         if override is not None:
             made[kind] = override
@@ -156,6 +178,7 @@ def build_bundle(**overrides: Any) -> Bundle:
     bundle = Bundle(
         text=made["text"], image=made["image"], video=made["video"],
         audio=made["audio"], t2i=made["t2i"], lipsync=made["lipsync"],
+        vision=made["vision"],
     )
     catalog = overrides.get("catalog")
     if catalog is None:
@@ -204,7 +227,8 @@ def _apply_catalog_caps(bundle: Bundle, catalog: Any) -> None:
 
 __all__ = [
     "register", "available", "create", "build_bundle",
-    "kind_env", "effective_name", "KIND_ENV", "DEFAULT_PROVIDER", "OPTIONAL_KINDS",
+    "kind_env", "effective_name", "default_name",
+    "KIND_ENV", "DEFAULT_PROVIDER", "DEFAULT_OFF_KINDS", "OPTIONAL_KINDS",
     "TextProvider", "ImageProvider", "VideoProvider", "AudioProvider",
-    "T2IProvider", "LipSyncProvider",
+    "T2IProvider", "LipSyncProvider", "VisionProvider",
 ]

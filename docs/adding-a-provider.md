@@ -177,6 +177,68 @@ def poll(self, job_id, *, timeout=300.0):
 名字要和顶层 `characters` 数组里的**逐字一致**；对不上时那一镜拿不到参考图，
 报告里会把不认识的名字列出来。
 
+## 视觉校验（第七种形态）
+
+前六种形态都在**做东西**，这一种只负责"看一眼已经做出来的东西，然后说话"。
+它不产出任何交付物，不写文件，不改画面。
+
+```python
+from ..providers.base import ProviderError, VisionProvider
+from ..providers.registry import register
+
+
+@register("your_vendor", "vision")
+class YourVision(VisionProvider):
+    name = "your_vendor-vision"
+
+    def chat(self, messages, *, scene=""):
+        # messages 是 OpenAI 风格：[{"role": "user", "content": [...]}]
+        # content 里混着 {"type": "text"} 与 {"type": "image_url"}
+        try:
+            data = post("/v1/chat/completions", json={
+                "model": "your-vision-model",
+                "messages": messages,
+            })
+        except Exception as exc:
+            raise ProviderError(f"视觉调用失败：{exc}", retryable=True,
+                                provider=self.name) from exc
+        text = data["choices"][0]["message"]["content"]
+        return text, {
+            "unit": "call", "amount": 1,
+            "money": 0.006,                 # 如实报账：这一层是按次计费的
+            "provider": self.name, "stage": "qc",
+        }
+```
+
+然后 `AI_DRAMA_VISION=your_vendor`。
+
+### 接口为什么这么笨
+
+**消息进、文本出。** 提示词、逐角色最低分门槛、`unchecked`（没查成）的语义
+全都写在 `core/identity.py` 与 `core/vision_qc.py` 里，而且是纯函数、离线可测 ——
+不需要任何 API key 就能测"输出乱码时算不算通过"。
+
+如果反过来把提示词和解析塞进 provider，等于把已经写好并测过的判定逻辑复制一份
+到每个厂商实现里，而且从此再也测不动它。
+
+`messages` 用的是 OpenAI 风格（`core/identity.check_messages()` 生成的就是这个）。
+自研接口的实现方自己拆一遍即可，但**拆的时候把 `detail` 一起考虑**：
+参考图要看清五官（`high`），视频抽帧和逐镜检查用低分辨率就够（`low`）——
+512 宽的一帧约 145KB base64，十几帧就是 2MB 请求体。
+
+### 三条硬要求
+
+1. **失败要抛 `ProviderError`，不要返回一段"看起来正常"的文本。**
+   上层会把它转成「没查成」。返回 `{"pass": true}` 的假结论是这一层最严重的
+   错误 —— 报告上会印着"一致性通过（9 分）"，而实际上没有任何东西看过画面。
+2. **如实报账。** 这一层默认是关的（`registry.DEFAULT_OFF_KINDS`），
+   花了钱必须看得见 —— 打开它的人是在为自己的判断买保险。
+3. **别自己决定"通过/不通过"。** 你只负责把文本拿回来；
+   结论（含三态）由骨架按 `core/identity.py` 的规则算。
+
+自检：`python run.py doctor` 会单列一行 `vision`。没配时打印的是
+"默认关闭"而不是"已关闭"—— 这两句话的区别是"你没开"和"你关掉了它"。
+
 ## 请求字段是配置，不是常量
 
 各家把参考素材放在哪个字段完全不一致（`image` / `image_urls` / `ref_images`…），

@@ -36,6 +36,7 @@ from .base import (
     T2IProvider,
     TextProvider,
     VideoProvider,
+    VisionProvider,
     estimate_tokens,
 )
 from .registry import register
@@ -618,3 +619,55 @@ class DryRunLipSyncProvider(LipSyncProvider):
             "shot_label": shot_label,
             "note": f"[dryrun] 没有真的改嘴型（{heard}）：只做了无音轨重编码，时长保持 {before:.3f}s",
         }
+
+
+# ————————————————————————————————————————----
+# 视觉（"看一眼已经做出来的东西"）
+# ————————————————————————————————————————----
+
+@register("dryrun", "vision")
+class DryRunVisionProvider(VisionProvider):
+    """占位视觉：**它看不见，而且如实说出来。**
+
+    这个类是"诚实的 dryrun"这条原则最极端的一个例子。做一个"假装看过了"的
+    视觉 provider 在技术上很容易（返回 `{"pass": true, "score": 9}` 就行），
+    而且会让整条流水线一路绿灯 —— 但那正是本项目反复在防的那种失败：
+
+        质检报告写着"一致性通过（9 分）"，而实际上**没有任何东西看过画面**。
+
+    所以它直接抛 `ProviderError`。上层会把这个失败转成 `unchecked`
+    （没查成），而不是"通过" —— 质检的最终状态因此是"没查成"，
+    严格模式下 run 不会被标成完成。用户会看到"你配了个看不了图的检查器"，
+    而不是一个漂亮的 9 分。
+
+    要真的检查，就配一个能看图的 provider：
+
+        AI_DRAMA_VISION=your_vendor
+
+    见 docs/adding-a-provider.md 的"视觉校验（第七种形态）"。
+    """
+
+    name = "dryrun-vision"
+
+    def chat(self, messages: List[Dict[str, Any]], *,
+             scene: str = "") -> Tuple[str, Dict[str, Any]]:
+        n_img = sum(
+            1
+            for m in (messages or [])
+            for part in (m.get("content") or [])
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        )
+        raise ProviderError(
+            f"dryrun 视觉 provider 不做真实识别（这次调用带了 {n_img} 张图）。"
+            f"画面没有被任何人看过 —— 这一项应当记成「没查成」，不是「通过」。"
+            f"要真的检查就配 AI_DRAMA_VISION=<能看图的 provider>。",
+            retryable=False, provider=self.name,
+        )
+
+    def health(self) -> Dict[str, Any]:
+        out = super().health()
+        out.update({
+            "ok": False,
+            "problem": "不做真实识别：配了它也只会把校验记成「没查成」",
+        })
+        return out

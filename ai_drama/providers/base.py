@@ -325,6 +325,50 @@ class LipSyncProvider(abc.ABC):
         return {"name": self.name, "kind": self.kind, "ok": True}
 
 
+class VisionProvider(abc.ABC):
+    """多模态：给一段带图的消息，返回文本。第七种形态。
+
+    为什么单独一个形态：它是**检查**用的，不是生产用的。前面六种形态都在
+    "做出东西"，这一种只负责"看一眼已经做出来的东西，然后说话" ——
+    它不产出任何交付物，不写文件，不改画面。
+
+    接口刻意做得很笨：**消息进、文本出**。理由是判断逻辑不在 provider 里：
+
+      * 提示词、逐角色最低分门槛、`unchecked`（没查成）的三态语义，
+        全都写在 `core/identity.py` 里，而且是**纯函数、离线可测**的
+        （不需要任何 API key 就能测"输出乱码时算不算通过"）。
+      * provider 的活只剩"把 messages 发出去、把文本拿回来、如实报账"。
+
+    如果反过来把提示词和解析塞进 provider，等于把已经写好并测过的判定逻辑
+    复制一份到每个厂商实现里，而且从此再也测不动它。
+
+    ``messages`` 用的是 OpenAI 风格的 ``[{"role": "user", "content": [...]}]``
+    （`core/identity.check_messages()` 生成的就是这个），content 里可以混
+    ``{"type": "text"}`` 与 ``{"type": "image_url"}``。自研接口的实现方
+    自己拆一遍即可 —— 但**拆的时候把 detail 一起考虑**：参考图要看清五官，
+    抽帧用低分辨率就够。
+    """
+
+    name = "vision-base"
+    kind = "vision"
+
+    @abc.abstractmethod
+    def chat(self, messages: List[Dict[str, Any]], *,
+             scene: str = "") -> TextResult:
+        """发出去，拿回 (文本, usage)。
+
+        实现方要如实报账：视觉调用通常按图 + token 计费，
+        而这一层是**可选的**（配置里默认不开），花了钱必须看得见。
+
+        失败时抛 `ProviderError` —— 上层会把它变成 `unchecked`
+        （没查成），而不是"通过"。这是本形态最重要的一条：
+        **看不见不等于没问题。**
+        """
+
+    def health(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind, "ok": True}
+
+
 class Bundle:
     """一次 run 用到的全部 provider。
 
@@ -340,6 +384,7 @@ class Bundle:
         audio: AudioProvider,
         t2i: Optional[T2IProvider] = None,
         lipsync: Optional[LipSyncProvider] = None,
+        vision: Optional[VisionProvider] = None,
         catalog: Any = None,
     ):
         self.text = text
@@ -348,6 +393,7 @@ class Bundle:
         self.audio = audio
         self.t2i = t2i
         self.lipsync = lipsync
+        self.vision = vision
         #: 模型目录（core.catalog.ModelCatalog）。适配器可以拿它查
         #: 「我这个模型的多长上限、参考素材该放哪个字段」。允许为 None ——
         #: 手搓 bundle 跑测试时不该被迫造一份目录。
@@ -355,7 +401,7 @@ class Bundle:
 
     def all_providers(self) -> List[Any]:
         return [p for p in (self.text, self.image, self.video, self.audio,
-                            self.t2i, self.lipsync) if p]
+                            self.t2i, self.lipsync, self.vision) if p]
 
     def report(self) -> List[Dict[str, Any]]:
         out = [p.health() for p in self.all_providers()]
@@ -382,6 +428,10 @@ PRICING: Dict[str, Dict[str, float]] = {
     "tts_per_1k_char": {"default": 0.015},
     "music_per_minute": {"default": 0.05},
     "lipsync_per_second": {"default": 0.02},
+    # 视觉校验按**次**算：一次调用通常带 1-2 张图。这里是"看一眼"的单价，
+    # 不是生产单价 —— 它便宜，但乘上"每镜都查"就不便宜了，
+    # 所以质检里默认不开（见 config/qc_rules.yaml）。
+    "vision_per_call": {"default": 0.006},
 }
 
 

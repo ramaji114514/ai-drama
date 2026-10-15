@@ -189,6 +189,31 @@ class QcRules:
     #: 想严格到"一个都不能少"就把 require_lipsync 打开、这里设 0。
     lipsync_missing_ratio: float = 0.0
 
+    # ———— 下面两条要**调模型看图**，所以默认关（见 core/vision_qc.py）
+    #
+    # 关掉不等于"没这项要求"，而是"没人看过画面，我不假装看过"：
+    # 打开后 provider 缺席 / 调用失败一律变成 unchecked（没查成），
+    # 而 unchecked 在严格模式下**不算通过**。
+
+    #: 画面里不许出现文字（招牌/门牌/水印/字幕）。
+    #: 值得单独一项：模型很爱在招牌和屏幕上顺手写字，而它写的中文基本都是错的 ——
+    #: 一部剧里出现三个错别字招牌，观众立刻知道这是 AI 生成的。
+    #: 分工是「生成的画面里不许有字，字全部后期烧」（见 stage07_concat）。
+    require_no_text: bool = False
+    severity_no_text: Severity = Severity.BLOCK
+
+    #: 画面里的人要和角色的定妆照一致（把关键帧和定妆照一起发给视觉模型）。
+    #: 判定逻辑与三态语义早就写好了（core/identity.py），缺的一直是
+    #: "真能看图的那一层" —— 现在由 vision provider 补上。
+    require_identity: bool = False
+    severity_identity: Severity = Severity.BLOCK
+    #: 一致性打分门槛（0-10）。低于它按不通过处理。
+    identity_pass_score: int = 7
+    #: 最多查几个镜头（0 = 全查）。每查一镜就是一次调用，所以要有个闸门；
+    #: 抽样是**等距**的，不是取前 N 个 —— 取前 N 个会把检查范围永远钉在开头几场，
+    #: 而后半部恰恰是最容易漂的地方。
+    vision_max_checks: int = 0
+
     @classmethod
     def load(cls, path: Optional[Path]) -> "QcRules":
         """从 YAML 读规则；文件不存在或读不动就退回默认值（并保留原因）。
@@ -213,7 +238,8 @@ class QcRules:
             kwargs[key] = value
         for sev_key in ("severity_dialogue", "severity_duration", "severity_duplicate",
                         "severity_framing", "severity_hook", "severity_auditory",
-                        "severity_assets", "severity_lipsync"):
+                        "severity_assets", "severity_lipsync",
+                        "severity_no_text", "severity_identity"):
             if sev_key in kwargs and not isinstance(kwargs[sev_key], Severity):
                 kwargs[sev_key] = Severity(str(kwargs[sev_key]))
         for tup_key in ("applies_to", "stages", "forbidden_in_visual"):

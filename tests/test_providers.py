@@ -30,16 +30,52 @@ def test_default_is_dryrun_so_the_skeleton_runs_with_zero_keys():
     assert bundle.video.name.startswith("dryrun")
 
 
-def test_every_kind_including_t2i_defaults_to_dryrun(monkeypatch):
-    """五个形态一个都不能少。
+def test_defaults_are_dryrun_except_the_kinds_that_must_stay_off(monkeypatch):
+    """每个形态没设环境变量时用什么，必须**只有一处**说了算。
 
     这条是防回归的：`t2i` 曾经默认是空字符串，于是 `doctor` 打印
     "未配置，定妆照会跳过"、而流水线其实在跑定妆照 —— 报告和现实各说一套。
+
+    现在多一条分界线：**能生产的**形态默认 dryrun（零 key 也要能出片），
+    **做检查的**形态（vision）默认关闭。理由见下面那条测试。
     """
     for kind in registry.KIND_ENV:
         monkeypatch.delenv(registry.kind_env(kind), raising=False)
-        assert registry.effective_name(kind) == "dryrun", kind
-    assert registry.build_bundle().t2i is not None
+        if kind in registry.DEFAULT_OFF_KINDS:
+            assert registry.effective_name(kind) == "", kind
+        else:
+            assert registry.effective_name(kind) == "dryrun", kind
+
+    bundle = registry.build_bundle()
+    assert bundle.t2i is not None
+    assert bundle.vision is None
+
+
+def test_vision_is_off_by_default_and_never_fakes_a_verdict(monkeypatch):
+    """视觉是**检查**形态，它的默认值必须是"关掉"，不能是 dryrun。
+
+    一个"假装看过了"的默认检查器比没有检查器更糟：它会把"没查成"洗成
+    "通过"，而 unchecked 与 pass 的区别正是质检那一层的全部意义。
+    显式配上 dryrun 也只允许得到"没查成" —— DryRunVisionProvider 直接抛。
+    """
+    monkeypatch.delenv("AI_DRAMA_VISION", raising=False)
+    assert registry.effective_name("vision") == ""
+    assert registry.build_bundle().vision is None
+
+    monkeypatch.setenv("AI_DRAMA_VISION", "dryrun")
+    vision = registry.build_bundle().vision
+    assert vision is not None
+    assert vision.health()["ok"] is False, "dryrun 视觉不能自称可用"
+    with pytest.raises(ProviderError):
+        vision.chat([{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "x"}}]}])
+
+
+def test_vision_can_be_turned_off_explicitly(monkeypatch):
+    for off in ("none", "off", "NONE", "0", "false", " "):
+        monkeypatch.setenv("AI_DRAMA_VISION", off)
+        assert registry.effective_name("vision") == "", off
+        assert registry.build_bundle().vision is None, off
 
 
 def test_t2i_can_be_turned_off_explicitly(monkeypatch):
