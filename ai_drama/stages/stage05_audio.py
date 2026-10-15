@@ -27,6 +27,7 @@ from ..core import media, paths
 from ..core.context import StageContext, StageReport
 from ..core.models import Shot
 from ..providers.base import call_with_retry
+from .stage02_storyboard import characters_in_shot
 
 
 def _voice_for(ctx: StageContext, shot: Shot) -> str:
@@ -36,16 +37,23 @@ def _voice_for(ctx: StageContext, shot: Shot) -> str:
 
     同一个人每集必须用同一个声音 —— 界面上换脸比换声音更刺眼，但观众对
     声音的记忆更持久，第 3 集换了音色会直接被说成"配音换人了"。
-    说话人从台词行首解析（`苏蔓：（低声）不对。` -> `苏蔓`）；
-    解析不出来就退回全局音色。
+
+    说话人从台词行首解析（`苏蔓：（低声）不对。` -> `苏蔓`）。解析不出来时，
+    如果这一镜**画面里只有一个人**，那就是他/她在说 —— 走**声明**（分镜给的
+    角色引用）而不是文本猜，因为声明引用的是身份，文本只是字符串。
+    这台词没写说话人的情况相当常见，退回全局默认会让整部剧听起来像一个人
+    在自言自语。
     """
     fallback = str(ctx.run.meta.get("voice") or "female_01")
     if ctx.project is None:
         return fallback
     speaker = media.speaker_of(shot.dialogue)
-    if not speaker:
-        return fallback
-    return ctx.project.voice_for(speaker, fallback)
+    if speaker:
+        return ctx.project.voice_for(speaker, fallback)
+    only = characters_in_shot(ctx.episode, shot)
+    if len(only) == 1:
+        return ctx.project.voice_for(only[0], fallback)
+    return fallback
 
 
 def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:

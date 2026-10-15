@@ -374,8 +374,9 @@ def cmd_project_show(args: argparse.Namespace) -> int:
             shot = "定妆照 OK"
         else:
             shot = f"[!] 定妆照丢了：{c.ref_image}"
-        voice = proj.voice_map.get(c.name, "（未指定，用 --voice）")
-        print(f"  {c.name:<12} {shot:<34} 音色 {voice}")
+        voice = proj.voice_for(c, "（未指定，用 --voice）")
+        alias = f"  别名 {'、'.join(c.aliases)}" if c.aliases else ""
+        print(f"  {c.name:<12} {c.char_id or '无id':<16} {shot:<34} 音色 {voice}{alias}")
         if args.verbose and c.desc:
             print(f"      {c.desc}")
 
@@ -397,19 +398,20 @@ def cmd_project_set(args: argparse.Namespace) -> int:
     if proj is None:
         print(f"project 不存在：{args.project_id}")
         return 1
-    canon = proj.character_by_name(args.name)
+    canon = proj.character_by_ref(args.name)
     if canon is None:
-        print(f"角色不在圣经里：{args.name}")
-        print("在册角色：" + "、".join(c.name for c in proj.characters))
+        print(f"角色不在圣经里（也不是任何角色的别名）：{args.name}")
+        print("在册角色：" + "、".join(f"{c.name}({c.char_id or '无id'})" for c in proj.characters))
         return 1
     if args.desc is not None:
         canon.desc = args.desc
     if args.anchor_prompt is not None:
         canon.anchor_prompt = args.anchor_prompt
     if args.voice is not None:
-        proj.voice_map[canon.name] = args.voice
+        # 键优先写 id：改了名字之后音色还跟着这个人走
+        proj.voice_map[canon.char_id or canon.name] = args.voice
     p = proj.save(root)
-    print(f"已更新 {canon.name} -> {p}")
+    print(f"已更新 {canon.name}（{canon.char_id or '无id'}）-> {p}")
     if args.anchor_prompt is not None:
         print("[!] 改了 anchor_prompt 但**没有重新生成定妆照**："
               "这一集的参考图还是旧的那张。要换脸请删掉 "

@@ -36,8 +36,9 @@
 * 目前只包住**角色**（含外观与音色）。场景/地点、服装（同一角色不同集换装）
   还没有；`Scene.location` 目前每集自由生成。要加的话是同样的形状：
   在 Project 里加一个 `locations` 字典 + 一个可复用的场景参考图。
-* 圣经按**名字**匹配角色。同名不同人、改名、多重身份（卧底）都会错配。
-  真要做扎实，得给每个角色一个稳定 id，让分镜阶段输出 id 而不是名字。
+* 圣经按**身份**（`Character.char_id`）匹配角色，名字与别名只是这个身份的
+  叫法 —— 同名不同人、改名、多重身份都不会再配错脸。引用的解析规则见
+  `core/cast.py`。`locations`（场景/地点）仍然没有，形状同上。
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
+from .cast import ensure_ids, id_table, mint_id, resolve
 from .models import Character, new_id, now_iso
 
 
@@ -62,7 +64,8 @@ class Project:
     #: 角色圣经。每个角色的 `desc` / `anchor_prompt` 一经写定就不再让 LLM 改，
     #: 这样"这个人长什么样"不会随集数漂移。
     characters: List[Character] = field(default_factory=list)
-    #: 角色名 -> TTS 音色。同一个人每集必须用同一个声音，否则比脸漂还明显。
+    #: 角色 -> TTS 音色。键可以是 `char_id`（首选）、名字或别名。
+    #: 同一个人每集必须用同一个声音，否则比脸漂还明显。
     voice_map: Dict[str, str] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
@@ -75,8 +78,26 @@ class Project:
                 return c
         return None
 
-    def voice_for(self, name: str, fallback: str = "") -> str:
-        return self.voice_map.get(name or "", fallback) or fallback
+    def character_by_ref(self, ref: str) -> Optional[Character]:
+        """按 id / 名字 / 别名认人。名字有歧义时返回 None（**不猜**）。"""
+        return resolve(ref, self.characters).character
+
+    def voice_for(self, who: Any, fallback: str = "") -> str:
+        """这个人用什么音色。
+
+        `who` 可以是 `Character`、角色 id、名字或别名。音色表按 id 存，
+        但**回落到名字**：手写的项目文件一般只写了名字，不能因为没填 id
+        就让整部剧换嗓子。
+        """
+        c = who if isinstance(who, Character) else self.character_by_ref(str(who or ""))
+        if c is not None:
+            for key in (c.char_id, c.name, *c.aliases):
+                if key and key in self.voice_map:
+                    return self.voice_map[key]
+        # 认不出这个人时，也允许直接用字符串查一次（老项目文件按名字存的表）
+        if isinstance(who, str):
+            return self.voice_map.get(who, fallback) or fallback
+        return fallback
 
     def scripture_block(self) -> str:
         """给分镜阶段看的"角色圣经"片段。
@@ -85,6 +106,10 @@ class Project:
         这些角色的存在，才可能在剧情里用对。但就算它不听话，合并那一步
         （merge_cast）也会把外观改回圣经里的值 —— 提示词负责"用对"，
         合并负责"改不坏"。
+
+        片段里带上**角色表**（`id = 名字`），并要求镜头里的 `characters`
+        填 id：这样第 5 集把名字改掉时，前面引用这个人的镜头不会一起失配。
+        模型抄错也无所谓 —— 解析会退回到名字，并把降级记进报告。
         """
         if not self.characters:
             return ""
@@ -94,10 +119,15 @@ class Project:
         for c in self.characters:
             desc = c.desc or c.anchor_prompt
             locked = "（定妆照已锁定，不要重新描写外貌）" if c.ref_image else ""
-            lines.append(f"- {c.name}：{desc}{locked}")
+            alias = f"（别名：{'、'.join(c.aliases)}）" if c.aliases else ""
+            lines.append(f"- {c.name}：{desc}{alias}{locked}")
+        table = id_table(self.characters)
+        if table:
+            lines.append(table)
         lines.append(
             "要求：`characters` 里必须原样带上以上**在册角色**（哪怕这一集它没戏），"
-            "`name` / `desc` / `anchor_prompt` 逐字照抄，不得改名、不得改外貌。"
+            "镜头里的出镜角色填**角色表里的 id**。"
+            "`name` / `desc` / `anchor_prompt` 逐字照抄，不得改外貌。"
             "可以让新角色登场，新角色按你的设计写。"
         )
         return "\n".join(lines)
@@ -109,18 +139,26 @@ class Project:
 
         规则（顺序即优先级）：
 
-        1. **在册角色一律以圣经为准** —— 名字、外貌、定妆照都取自圣经，
+        1. **在册角色一律以圣经为准** —— 外貌、定妆照、id 都取自圣经，
            模型这一集写了什么都不算数。它顶多能决定"这个人这一集出不出场"
            （而出场与否其实由台词和动作文本决定，见
            `stage02_storyboard.characters_in_shot`）。
         2. 所有在册角色都会进本集卡司，**即使模型忘了列**。否则一个在册角色
            只要模型漏写一次，这一集就锁不住脸；而漏写是模型最常见的失误。
-        3. 新名字按模型给的写，并回写进圣经 —— 下一集它就变成在册角色。
+        3. **按身份认人**：模型给了 id 就按 id 认；只给了名字/别名就按名字认。
+           认出来之后，如果它给的名字与圣经不同，那个名字**记进别名**而不是
+           改掉圣经 —— id 定身份，名字只是这个身份当下的叫法。
+        4. 新名字按模型给的写，并回写进圣经（含新 id）—— 下一集它就是在册角色。
 
         返回 (卡司, 统计)。统计里的 `new` 是**这一次新入册**的角色，调用方据此
         决定要不要生成新定妆照。
+
+        [!] 已知边界：名字写错一个字（苏曼 / 苏蔓）且模型没给 id 时，会被当成
+        一个新角色入册。这是刻意的 —— 模糊匹配会把「朱锦」和「朱锦娘」合成
+        一个人，那比多一个角色更难发现。报告里那句"新入册 N 个"就是给人看的信号。
         """
-        stats = {"locked": 0, "new": 0, "dropped": 0}
+        ensure_ids(self.characters)                 # 老 project.json 补 id
+        stats = {"locked": 0, "new": 0, "renamed": 0, "dropped": 0}
         cast: List[Character] = []
 
         # 1) 在册角色全部入卡司（以圣经为准）
@@ -130,41 +168,74 @@ class Project:
                 desc=canon.desc,
                 anchor_prompt=canon.anchor_prompt,
                 ref_image=canon.ref_image,
+                char_id=canon.char_id,
+                aliases=list(canon.aliases),
             ))
             stats["locked"] += 1
 
-        by_name = {c.name: c for c in cast}
+        by_id = {c.char_id: c for c in cast if c.char_id}
 
-        # 2) 模型给的角色：在册的忽略其外观，新名字入册
+        # 2) 模型给的角色：认出来的忽略其外观，认不出的入册
         for inc in incoming:
             name = (inc.name or "").strip()
-            if not name:
+            cid = (inc.char_id or "").strip()
+            if not name and not cid:
                 continue
-            if name in by_name:
-                # 在册：外观以圣经为准，但允许模型补充圣经里缺失的字段
-                # （早期项目可能只有名字，没有 desc）
-                canon = by_name[name]
-                if not canon.desc:
-                    canon.desc = inc.desc
-                if not canon.anchor_prompt:
-                    canon.anchor_prompt = inc.anchor_prompt or inc.desc
+
+            hit: Optional[Character] = None
+            if cid and cid in by_id:
+                hit = by_id[cid]
+            else:
+                # 只给了名字（或别名）时按圣经解析，再按 id 找回卡司里的副本。
+                found = resolve(name or cid, self.characters).character
+                if found is not None:
+                    hit = next((c for c in cast if c.char_id == found.char_id), None)
+
+            if hit is None:
+                fresh_id = mint_id(name or cid, [c.char_id for c in self.characters])
+                fresh = Character(
+                    name=name or cid, desc=inc.desc,
+                    anchor_prompt=inc.anchor_prompt or inc.desc,
+                    char_id=fresh_id,
+                )
+                cast.append(fresh)
+                # 新角色也回写进圣经：下一集开始它就是在册角色
+                self.characters.append(Character(
+                    name=fresh.name, desc=fresh.desc,
+                    anchor_prompt=fresh.anchor_prompt,
+                    char_id=fresh_id,
+                ))
+                by_id[fresh_id] = fresh
+                stats["new"] += 1
                 continue
-            fresh = Character(
-                name=name, desc=inc.desc,
-                anchor_prompt=inc.anchor_prompt or inc.desc,
-            )
-            cast.append(fresh)
-            by_name[name] = fresh
-            self.characters.append(Character(
-                name=name, desc=fresh.desc, anchor_prompt=fresh.anchor_prompt,
-            ))
-            stats["new"] += 1
+
+            # 在册：外观以圣经为准，但允许模型补充圣经里缺失的字段
+            # （早期项目可能只有名字，没有 desc）
+            if not hit.desc:
+                hit.desc = inc.desc
+            if not hit.anchor_prompt:
+                hit.anchor_prompt = inc.anchor_prompt or inc.desc
+            # 换了个叫法：记成别名，而不是改掉名字。id 没变，身份还是同一个人，
+            # 于是前几集引用旧名字的镜头不会一起失联。
+            for label in [name, *inc.aliases]:
+                label = (label or "").strip()
+                if label and label != hit.name and label not in hit.aliases:
+                    hit.aliases.append(label)
+                    self._remember_alias(hit.char_id, label)
+                    stats["renamed"] += 1
 
         return cast, stats
 
-    def remember_portrait(self, name: str, ref_image: str) -> None:
+    def _remember_alias(self, char_id: str, label: str) -> None:
+        """把新学到的叫法写回圣经，这样下一集按旧名字也能认出这个人。"""
+        for canon in self.characters:
+            if canon.char_id == char_id and label not in canon.aliases:
+                canon.aliases.append(label)
+                return
+
+    def remember_portrait(self, ref: str, ref_image: str) -> None:
         """把定妆照写进圣经 —— 第 2 集起复用同一张文件。"""
-        canon = self.character_by_name(name)
+        canon = self.character_by_ref(ref) or self.character_by_name(ref)
         if canon is not None:
             canon.ref_image = ref_image
 
@@ -225,6 +296,9 @@ def load(root: Path, project_id: str) -> Optional[Project]:
     proj = Project.from_dict(data)
     if not proj.project_id:
         proj.project_id = project_id
+    # 老文件没有 char_id：读进来时按名字补上。幂等，所以不需要立刻回写 ——
+    # 下一次 save()（merge_cast 之后必然发生）会把 id 落进文件。
+    ensure_ids(proj.characters)
     return proj
 
 

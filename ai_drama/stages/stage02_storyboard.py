@@ -21,14 +21,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import List, Optional
 
-from ..core import paths
+from ..core import cast, paths
 from ..core.context import StageContext, StageReport
 from ..core.faces import matches_character
 from ..core.identity import shot_identity_prompt
-from ..core.models import Character, Shot
 from ..core.media import estimate_shot_seconds
+from ..core.models import Character, Shot
 from ..providers.base import caps_of
 
 # 景别 -> 画面提示词片段
@@ -52,7 +53,7 @@ NEGATIVE = "文字, 字幕, 水印, 畸形手指, 多手多脚, 面部崩坏, �
 
 
 def characters_by_text(ep, shot: Shot) -> List[Character]:
-    """**猜**这一镜有谁：在镜头文本里找角色名的子串。
+    """**猜**这一镜有谁：在镜头文本里找角色名（或别名）的子串。
 
     [!] 这是已知的薄弱点（参考项目就是这么做的，多角色场景立即失效），
     现在只作为**退路**用：
@@ -62,34 +63,43 @@ def characters_by_text(ep, shot: Shot) -> List[Character]:
         stage02 会把"靠猜"的镜数报出来，不会让它悄悄发生。
     """
     blob = f"{shot.action} {shot.dialogue}"
-    names = [c.name for c in ep.characters if c.name]
+    labels: List[str] = []
+    for c in ep.characters:
+        for lbl in c.labels():
+            if lbl not in labels:
+                labels.append(lbl)
     hits = []
     for c in ep.characters:
-        if c.name and matches_character(blob, c.name, names):
-            hits.append((blob.find(c.name), c))
+        where = [blob.find(lbl) for lbl in c.labels() if matches_character(blob, lbl, labels)]
+        if where:
+            hits.append((min(where), c))
     return [c for _, c in sorted(hits, key=lambda t: t[0])]
 
 
-def declared_characters(ep, shot: Shot):
-    """解析 `shot.characters`。返回 (命中的角色, 不认识的名单)。
+def resolve_declared(ep, shot: Shot):
+    """解析 `shot.characters`：返回 (命中的角色, 不认识的, 有歧义的)。
 
-    不认识的名单**必须报出来**：模型写错一个名字（"苏曼" vs "苏蔓"），
-    这一镜就锁不住脸，而它不会报错 —— 只会让人看到一张陌生的脸。
+    引用可以是**角色 id、名字或别名** —— 项目模式下模型抄的是角色表里的 id
+    （所以改名不会让引用失联），但它写名字、写化名、甚至抄错，也都不该让
+    这一镜静默丢掉参考图。降级会发生，代价是这里要把话说出来。
 
-    注意 `characters is None`（没声明）和 `[]`（声明"画面里没人"）是两回事，
+    `characters is None`（没声明）和 `[]`（声明"画面里没有人"）是两回事，
     只有前者才返回空并让调用方退回去猜。
     """
     if shot.characters is None:
-        return [], []
-    known = {c.name: c for c in ep.characters if c.name}
-    found, unknown = [], []
-    for name in shot.characters:
-        c = known.get(name)
-        if c is None:
-            unknown.append(name)
-        elif c not in found:
-            found.append(c)
-    return found, unknown
+        return [], [], []
+    found, _stats, problems = cast.resolve_all(shot.characters, ep.characters)
+    # 返回**原始引用**而不是整句话：调用方要拼自己的报告文案
+    # （详细的 `Problem.detail` 在 core.cast 里，需要时再取）。
+    unknown = [p.ref for p in problems if p.how == cast.HOW_UNKNOWN]
+    ambiguous = [p.ref for p in problems if p.how == cast.HOW_AMBIGUOUS]
+    return found, unknown, ambiguous
+
+
+def declared_characters(ep, shot: Shot):
+    """老签名：返回 (命中的角色, 解析不了的说明)。"""
+    found, unknown, ambiguous = resolve_declared(ep, shot)
+    return found, unknown + ambiguous
 
 
 def characters_in_shot(ep, shot: Shot) -> List[Character]:
@@ -107,8 +117,8 @@ def characters_in_shot(ep, shot: Shot) -> List[Character]:
     3. 返回值里只含**在册角色**：模型点了一个不在卡司里的名字，那一镜就没有
        参考图，但这件事会在 stage02 的报告里被点名，不会静默。
 
-    [!] 余下的薄弱点：`shot.characters` 里仍然按**名字**匹配角色。同名不同人、
-    改名、多重身份（卧底）还是会错配 —— 要做扎实得给角色稳定 id。
+    引用的解析走 `core.cast`：**按身份（char_id）认人**，名字与别名只是这个
+    身份的叫法。于是同名不同人不会被折成一个人，改名也不会让前几集失联。
     """
     if shot.characters is not None:
         return declared_characters(ep, shot)[0]
@@ -196,10 +206,22 @@ def run(ctx: StageContext) -> StageReport:
         run_level = paths.portrait(ctx.root, ctx.run.run_id, ch.name)
         canon = paths.project_portrait(ctx.root, pid, ch.name) if pid else None
 
-        # 1) 项目里已经有了 -> 直接复用。**不重新生成**：既不花钱，也不可能漂。
-        if canon is not None and canon.exists() and canon.stat().st_size > 0 and not ctx.force:
-            ch.ref_image = str(canon)
-            ctx.project.remember_portrait(ch.name, str(canon))   # type: ignore[union-attr]
+        # 圣经里记着的那张脸在哪。**改名字之后文件名不会跟着改**，所以不能只按
+        # 名字推路径：那样"改名"就等于"换脸"（第 2 集重新生成一张，而报告里
+        # 还写着"沿用项目里的"）。这也正是这条 id 线索要修的同一类错。
+        known = Path(ch.ref_image) if ch.ref_image else None
+        if known is not None and not (known.is_file() and known.stat().st_size > 0):
+            known = None
+        have = canon if (canon is not None and canon.exists()
+                         and canon.stat().st_size > 0) else None
+
+        # 1) 这个人的脸已经有了 -> 直接复用。**不重新生成**：既不花钱，也不可能漂。
+        picked = known or have
+        if picked is not None and not ctx.force:
+            ch.ref_image = str(picked)
+            if ctx.project is not None:
+                # 按身份记，这样别名/改名都不会让这条记录走丢
+                ctx.project.remember_portrait(ch.char_id or ch.name, str(picked))
             reused += 1
             continue
 
@@ -229,7 +251,7 @@ def run(ctx: StageContext) -> StageReport:
             report.money += float(usage.get("money") or 0)
             ch.ref_image = str(dest)
             if ctx.project is not None:
-                ctx.project.remember_portrait(ch.name, str(dest))
+                ctx.project.remember_portrait(ch.char_id or ch.name, str(dest))
             portraits += 1
         except Exception as exc:                      # noqa: BLE001
             # 定妆照失败不应该让整片停摆，但必须留痕
@@ -246,15 +268,21 @@ def run(ctx: StageContext) -> StageReport:
     changed = 0
     declared = 0                 # 出镜角色由分镜显式给出的镜头数
     guessed = 0                  # 靠名字子串猜的（旧 episode.json / 模型漏字段）
-    unknown: List[str] = []      # 声明了但不在卡司里的名字
+    by_name = 0                  # 声明里靠名字/别名认出来的引用数（降级，要报）
+    unknown: List[str] = []      # 声明了但不在卡司里的引用
+    ambiguous: List[str] = []    # 声明了对上多个角色的引用（同名不同人）
     for shot in ep.shots:
         labels = reference_labels(ep, shot, max_refs)
         if labels:
             locked += 1
         if shot.characters is not None:
             declared += 1
-            _found, bad = declared_characters(ep, shot)
+            _found, bad, clash = resolve_declared(ep, shot)
             unknown.extend(n for n in bad if n not in unknown)
+            ambiguous.extend(n for n in clash if n not in ambiguous)
+            # 引用本可以写 id，写名字也能认出来 —— 但那是降级，报出来。
+            _f, stats, _p = cast.resolve_all(shot.characters, ep.characters)
+            by_name += stats[cast.HOW_NAME] + stats[cast.HOW_ALIAS]
         elif characters_by_text(ep, shot):
             # 只有真的猜出人来了才算"靠猜" —— 空镜本来就该是空数组
             guessed += 1
@@ -288,14 +316,24 @@ def run(ctx: StageContext) -> StageReport:
     report.notes.append(head)
     report.notes.append(lock)
     if unknown:
-        # 名字写错一个字，这一镜就锁不住脸 —— 而它不会报错
+        # 引用对不上角色表，这一镜就锁不住脸 —— 而它不会报错
         shown = "、".join(unknown[:4]) + ("…" if len(unknown) > 4 else "")
         report.notes.append(
             f"[!] 分镜声明的出镜角色里有 {len(unknown)} 个不在卡司里：{shown}。"
             "这些镜头拿不到参考图，脸锁不住 —— 多半是名字没写对（对不上角色表）"
         )
+    if ambiguous:
+        # 同名不同人：**不猜**，宁可这一镜没有参考图，也不要给错脸
+        shown = "、".join(ambiguous[:4]) + ("…" if len(ambiguous) > 4 else "")
+        report.notes.append(
+            f"[!] 分镜声明的出镜角色里有 {len(ambiguous)} 个对上了多个角色，"
+            f"已按「不猜」处理（这些引用不锁脸）：{shown}。"
+            "把镜头里的引用改成角色表里的 id 就能定下来 —— 名字对身份不是一对一"
+        )
     if declared or guessed:
         cast_note = f"出镜角色：{declared} 镜由分镜显式给出"
+        if by_name:
+            cast_note += f"（其中 {by_name} 个引用是名字/别名，不是 id）"
         if guessed:
             cast_note += f"，{guessed} 镜靠名字子串猜（旧 episode.json 或模型漏了 characters 字段）"
             report.notes.append(

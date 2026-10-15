@@ -124,8 +124,10 @@ PROMISES = (
     ("时间轴导出", r"def build_srt|timeline"),
     ("口型同步", r"class LipSyncProvider"),
     ("画面校验", r"class VisionProvider"),
+    ("音效合成", r"class SfxProvider"),
     ("角色圣经", r"class Project"),
     ("出镜角色", r"characters_on_screen"),
+    ("角色稳定 id", r"def resolve_all|char_id"),
 )
 
 

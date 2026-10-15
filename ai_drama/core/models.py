@@ -43,13 +43,50 @@ class Character:
     desc: str = ""
     anchor_prompt: str = ""
     ref_image: Optional[str] = None  # 定妆照产出的本地路径
+    #: 稳定身份。空表示"还没发过 id"，由 core.cast.ensure_ids() 按名字补上。
+    #: 用可推导的值而不是随机值，是为了让老 project.json 读两次得到同一套 id。
+    char_id: str = ""
+    #: 这个身份的别的叫法：化名、称号、旧名。引用解析会一并认（core.cast）。
+    aliases: List[str] = field(default_factory=list)
+
+    def labels(self) -> List[str]:
+        """这个身份的**全部叫法**：名字 + 别名（去重、去空）。
+
+        名字只是这个身份当下的叫法，别名是它别的叫法（化名、称号、旧名）。
+        查人、写提示词、报错文案都走这里，免得每处各自拼一遍。
+        """
+        out: List[str] = []
+        for lbl in [self.name, *self.aliases]:
+            lbl = (lbl or "").strip()
+            if lbl and lbl not in out:
+                out.append(lbl)
+        return out
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # 手写而不是 asdict()：让 project.json 里 id 排在名字前面，
+        # 人翻这个文件时第一眼看到的是身份，不是叫法。
+        return {
+            "char_id": self.char_id,
+            "name": self.name,
+            "aliases": list(self.aliases),
+            "desc": self.desc,
+            "anchor_prompt": self.anchor_prompt,
+            "ref_image": self.ref_image,
+        }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Character":
-        return cls(**{k: d.get(k) for k in cls.__dataclass_fields__})
+        aliases = d.get("aliases") or []
+        if isinstance(aliases, str):  # 手改项目文件时写成了一行
+            aliases = [aliases]
+        return cls(
+            name=d.get("name") or "",
+            desc=d.get("desc") or "",
+            anchor_prompt=d.get("anchor_prompt") or "",
+            ref_image=d.get("ref_image"),
+            char_id=d.get("char_id") or "",
+            aliases=[str(a) for a in aliases if a],
+        )
 
 
 @dataclass
@@ -169,6 +206,16 @@ class Episode:
             if c.name == name:
                 return c
         return None
+
+    def character_by_ref(self, ref: str) -> Optional[Character]:
+        """按 id / 名字 / 别名认人。同名不同人时返回 None（**不猜**）。
+
+        实现在 `core.cast`：延迟 import 是为了不让 models 反向依赖 cast
+        （cast 依赖 models 的 Character）。
+        """
+        from .cast import resolve
+
+        return resolve(ref, self.characters).character
 
     def to_dict(self) -> Dict[str, Any]:
         return {

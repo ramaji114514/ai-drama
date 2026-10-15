@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..core import paths
+from ..core import cast as castlib, paths
 from ..core.context import StageContext, StageReport
 from ..core.media import estimate_shot_seconds
 from ..core.models import Character, Episode, Scene, Shot
@@ -73,7 +73,7 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
           "action": "画面里发生什么（纯视觉）",
           "dialogue": "这一镜的台词，没有就留空字符串",
           "sfx": ["这一镜的**音效**（环境声与动作声），没有就留空数组"],
-          "characters": ["这一镜画面里**看得见**的角色名，按重要性排序"],
+          "characters": ["这一镜画面里**看得见**的角色 id（有角色表时）或名字，按重要性排序"],
           "location": "本镜地点"
         }}
       ]
@@ -90,7 +90,8 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
   写具体的、能听见的声音，一条 2-8 个字（"夜雨落在铁皮棚上"、"门被撞开"）。
   **不要写音乐**（BGM 是全片一条，走单独的字段），也不要写台词里已经有的东西。
   大部分镜头可以留空数组 —— 每一条音效都是一次真实调用，别为了填满而填。
-- `characters` 必须是 `characters` 顶层数组里出现过的名字，**逐字照抄**。
+- `characters` 必须是顶层 `characters` 数组里出现过的角色 —— **有角色表就填表里的 id**
+  （逐字照抄），没有角色表就填名字。
   只写画面里真的看得见的人：空镜、只闻其声、画外音都留空数组。
   这个字段决定后续拿谁的定妆照去锁脸，写错不会报错，只会让人看到一张陌生的脸。
 - 最后一个镜头必须留悬念（短剧的钩子）。"""
@@ -150,10 +151,18 @@ def run(ctx: StageContext) -> StageReport:
         # 新登场的角色立刻入册，下一集它就变成在册角色。
         # 定妆照要等 stage02 生成，那时再 remember_portrait()。
         ctx.save_project()
-        report.notes.append(
-            f"角色圣经：沿用 {stats['locked']} 个在册角色"
-            + (f"，新入册 {stats['new']} 个" if stats["new"] else "")
-        )
+        line = f"角色圣经：沿用 {stats['locked']} 个在册角色"
+        if stats["new"]:
+            line += f"，新入册 {stats['new']} 个"
+        if stats["renamed"]:
+            # 换了叫法：身份没变（id 还认得出），名字记成了别名
+            line += f"，记下 {stats['renamed']} 个新叫法"
+        report.notes.append(line)
+    # 单集模式（没有 project）也要发 id：这样同一集里"同名不同人"能被发现，
+    # 而不是等到了第 5 集才有人发现两张脸是同一个人。id 在这里是集内稳定的。
+    minted = castlib.ensure_ids(ep.characters)
+    if minted:
+        ctx.log(f"[script] 为 {minted} 个角色分配了稳定 id")
 
     ctx.store.save_episode(ep)
     ctx.store.sync_shots(ctx.run.run_id, ep)
@@ -275,11 +284,18 @@ def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
     for c in payload.get("characters", []) or []:
         if not c.get("name"):
             continue
+        aliases = c.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
         ep.characters.append(
             Character(
                 name=c["name"],
                 desc=c.get("desc", ""),
                 anchor_prompt=c.get("anchor_prompt", "") or c.get("desc", ""),
+                # 模型照抄角色表时会把 id 带回来 —— 这就是"改名不失联"的凭据。
+                # 它没给也无所谓，ensure_ids() 会补一个。
+                char_id=str(c.get("char_id") or "").strip(),
+                aliases=[str(a).strip() for a in aliases if str(a).strip()],
             )
         )
 
