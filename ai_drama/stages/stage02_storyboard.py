@@ -181,6 +181,24 @@ def compose_video_prompt(shot: Shot) -> str:
     return f"{shot.action}。{CAMERA_MOVE.get(shot.framing, '镜头缓推')}。"
 
 
+def _dryrun_portrait_feeding_a_real_model(ctx: StageContext, portraits_in_play: int) -> bool:
+    """有没有"占位定妆照喂给真图像模型"这回事。
+
+    要同时满足三条才算：这一集确实牵涉到定妆照、定妆照是 dryrun 出的、
+    而关键帧那一步换成了真模型。单看任何一条都不该报警
+    （全 dryrun 跑通一遍是完全正常的用法）。
+    """
+    if not portraits_in_play:
+        return False
+    t2i = ctx.bundle.t2i
+    image = ctx.bundle.image
+    if t2i is None or image is None:
+        return False
+    # 用名字前缀认"这是不是占位实现"，跟 registry 的 `dryrun-<kind>` 命名一致
+    # （stage06 认 dryrun-lipsync 是同一套约定）。
+    return t2i.name.startswith("dryrun") and not image.name.startswith("dryrun")
+
+
 def run(ctx: StageContext) -> StageReport:
     report = StageReport(stage="storyboard")
     ep = ctx.episode
@@ -327,6 +345,17 @@ def run(ctx: StageContext) -> StageReport:
     lock = f"参考锁定 {locked}/{len(ep.shots)} 镜（provider 单镜最多 {max_refs} 张参考图）"
     report.notes.append(head)
     report.notes.append(lock)
+    if _dryrun_portrait_feeding_a_real_model(ctx, portraits + reused):
+        # 这条不是"配置不全"的提醒，是一条**会花钱的错误**：
+        # 占位定妆照是个写着提示词的卡片，真图像模型会老老实实把那张卡片当底图去改，
+        # 于是每一帧都长着一张"文字卡片脸"，而且看起来像是模型出的图 ——
+        # 钱花了，脸也没锁住，报告里却一切正常。
+        report.notes.append(
+            "[!] 定妆照用的是 dryrun 占位图，而关键帧要用真模型生成 —— "
+            "真模型会把那张写着提示词的卡片当底图去改，出来的每一帧都带着卡片的样子，"
+            "脸也锁不住。花这个钱之前先把 AI_DRAMA_T2I 也配上，"
+            "或者删掉项目里 portraits/ 下已有的占位图重跑。"
+        )
     if unknown:
         # 引用对不上角色表，这一镜就锁不住脸 —— 而它不会报错
         shown = "、".join(unknown[:4]) + ("…" if len(unknown) > 4 else "")

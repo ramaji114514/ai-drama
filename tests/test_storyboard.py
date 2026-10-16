@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,3 +164,49 @@ def test_a_crowded_shot_is_reported_not_silently_locked(workspace: Path, need_ff
         assert "参考图上限" in notes, (
             f"有 {crowded} 个镜头出镜人数超过上限，却没有上报"
         )
+
+
+def _fake_ctx(t2i: str, image: str):
+    """只要 bundle 上那两个 provider 的 .name —— 这个判断不该依赖别的东西。"""
+
+    class _P:
+        def __init__(self, name: str):
+            self.name = name
+
+    return SimpleNamespace(bundle=SimpleNamespace(
+        t2i=_P(t2i) if t2i else None, image=_P(image) if image else None))
+
+
+def test_a_dryrun_portrait_fed_to_a_real_image_model_is_shouted_about():
+    """占位定妆照喂给真图像模型 —— 这是**会花钱**的错误，不是"配置不全"。
+
+    占位定妆照是一张写着提示词的卡片。真图像模型会老老实实把那张卡片当底图去改，
+    于是每一帧都长着"文字卡片脸"，而且看起来像是模型正经出的图：
+    钱花了，脸也没锁住，报告里却一切正常。
+    """
+    from ai_drama.stages.stage02_storyboard import _dryrun_portrait_feeding_a_real_model as bad
+
+    assert bad(_fake_ctx("dryrun-t2i", "dashscope"), 2), "正是要拦的那种组合"
+    # 全 dryrun 跑一遍是完全正常的用法 —— 每个新人第一次都这么跑
+    assert not bad(_fake_ctx("dryrun-t2i", "dryrun-image"), 2)
+    # 定妆照本来就是真模型出的，参考图是真的
+    assert not bad(_fake_ctx("dashscope", "dashscope"), 2)
+    # 这一集压根没有定妆照（关掉了 t2i），没什么可喂的
+    assert not bad(_fake_ctx("dryrun-t2i", "dashscope"), 0)
+    # 形态没配全的时候不该因为 None 崩掉
+    assert not bad(_fake_ctx("dryrun-t2i", ""), 2)
+    assert not bad(_fake_ctx("", "dashscope"), 2)
+
+
+@pytest.mark.ffmpeg
+def test_a_plain_dryrun_run_does_not_get_that_warning(workspace: Path, need_ffmpeg: None):
+    """默认配置（全 dryrun）下不许出现这条警告。
+
+    假警报会训练人忽略所有 [!]，那比没有告警更糟。
+    """
+    pipe = _pipeline(workspace)
+    run = pipe.start("默认配置跑一遍", scenes=1, shots_per_scene=2)
+    result = pipe.run(run)
+    storyboard = next(r for r in result["reports"] if r["stage"] == "storyboard")
+    notes = " ".join(storyboard["notes"])
+    assert "占位定妆照" not in notes

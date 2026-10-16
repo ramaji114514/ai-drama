@@ -203,7 +203,7 @@ ai-drama/
     └── cost_report.json
 ```
 
-### 十九条设计决定（以及为什么）
+### 二十一条设计决定（以及为什么）
 
 **1. `submit + poll`，而不是一个阻塞的 `generate()`**
 视频模型动辄排队几分钟。阻塞式接口没法做并发、没法做超时、
@@ -558,6 +558,29 @@ dryrun 的图生视频 拿请求里的 size 去 image_to_clip()
 
 ---
 
+### 20. 账单按模型**实际产出的量**记，不按你要的量
+
+`wanx2.1-i2v-turbo` 只出 5 秒，不接受 `duration`。你要 3 秒，它给你 5 秒，
+**收你 5 秒的钱**。
+
+如果适配器照请求的 3 秒记账，这一集就少报四成：预算闸门会在你以为还剩钱的时候
+先撞墙，`cost` 报表和账单也对不上。所以 `DashScopeVideo` 拿 ffprobe 量出**真实
+时长**再计价，然后把片子裁到请求的长度 —— 裁切是为了时间轴对得上（第 7 阶段按
+实际时长累加，多出几秒后面每一镜的声画都会错位），**不是为了省钱**，钱已经花了。
+两件事分开做，账才既是实付的、又是可用的。
+
+### 21. 试一个要花钱的接口，先只提交一个
+
+我在探测百炼的视频接口时，一个脚本里连着提交了 5 个任务想省时间 —— 其中 3 个
+因为参数不支持提交即失败（不收费，运气好），另外 2 个真的跑完了并计费。
+如果是"参数看着对、实际按不同档位计费"的那种错误，那一次就是 5 倍的钱。
+
+现在的规矩：**探测阶段一次只发一个请求，看到真实返回再批量。**
+批量并发是给"已经确认能跑"的路径用的（流水线里的 `--concurrency`），
+不是给"我还不知道这个参数对不对"用的。
+
+---
+
 ## 换厂商：只改一行
 
 `stages/` 里的代码**从不认识任何厂商**。它们只调用抽象接口：
@@ -603,6 +626,78 @@ AI_DRAMA_SUBTITLE_FONT=...    # 烧字幕用哪个字体（写字体名，不是
 AI_DRAMA_DB=...               # SQLite 落在哪
 ```
 
+### 已经接好的一家：阿里云百炼（DashScope）
+
+仓库里带了一个**完整可跑**的真厂商适配器 `ai_drama/providers/dashscope.py`
+（一个名字 `dashscope` 覆盖六种形态）——零第三方依赖，只用 stdlib 的 `urllib`。
+
+```bash
+# .env（不进版本库，.gitignore 里已经挡住了）
+AI_DRAMA_DASHSCOPE_API_KEY=sk-...
+AI_DRAMA_TEXT=dashscope       # qwen-plus
+AI_DRAMA_T2I=dashscope        # 定妆照   wanx2.1-t2i-turbo
+AI_DRAMA_IMAGE=dashscope      # 关键帧   wanx2.1-imageedit / wanx2.1-t2i-turbo
+AI_DRAMA_VIDEO=dashscope      # 片段     wanx2.1-i2v-turbo
+AI_DRAMA_AUDIO=dashscope      # 配音     qwen3-tts-flash
+AI_DRAMA_VISION=dashscope     # 画面校验 qwen3-vl-plus（默认关，要显式打开）
+```
+
+`AI_DRAMA_LIPSYNC` 和 `AI_DRAMA_SFX` 这一家没有对应接口，留 dryrun。
+
+**模型名都能用环境变量换**：`AI_DRAMA_DASHSCOPE_{TEXT,VISION,T2I,IMAGE,IMAGEEDIT,VIDEO,TTS}_MODEL`。
+单价也都能覆盖（`AI_DRAMA_DASHSCOPE_PRICE_*`，**按元写**，出门前按
+`AI_DRAMA_DASHSCOPE_USD_RATE` 折成美元记账），因为定价会变 ——
+代码里那份是 2026-10 华北2北京的官方价，写死只是给个不联网时的默认值。
+
+实测跑一集（1 场 2 镜，竖屏，`python run.py cost` 的输出）：
+
+| 阶段 | 模型 | 单价 | 这一集 |
+|---|---|---|---|
+| 剧本 | `qwen-plus` | ¥0.8/M in、¥2/M out | $0.0002 |
+| 定妆照 | `wanx2.1-t2i-turbo` | ¥0.14/张 | $0.0394（两个角色） |
+| 关键帧 | `wanx2.1-imageedit` | ¥0.14/张 | $0.0394（两个镜头） |
+| 片段 | `wanx2.1-i2v-turbo` 480P | ¥0.24/秒 | **$0.3628**（见下） |
+| 配音 | `qwen3-tts-flash` | ¥0.8/万字符 | $0.0001 |
+| 口型 | dryrun（没接这家） | — | $0.0480（**估算值，不是真花钱**） |
+
+**合计约 ¥3.2 一集**（两镜）。注意片段那一行：分镜要的是 3.0s + 2.4s，
+但模型各出 5 秒，所以账单按 10 秒算（≈¥2.65），不是按裁完的 5.4 秒 ——
+这正是设计决定 20 说的事。`cost` 报表里那 $0.0480 的口型费是 dryrun 自己
+报的估算值，真接了口型同步厂商才会变。
+
+#### 这一家有三个坑，都写在适配器注释里了，这里再说一遍
+
+1. **图像生成不走兼容模式**。`/compatible-mode/v1/images/generations` 对
+   所有出图模型都是 404，只能走原生异步任务接口
+   （`POST /api/v1/services/aigc/text2image/image-synthesis` + `X-DashScope-Async: enable`
+   + 轮询 `GET /api/v1/tasks/{task_id}`）。
+2. **TTS 也不走兼容模式**。官方文档给的 OpenAI 写法在这个账号上返回
+   `The voice property is required`；能用的原生端点是
+   `POST /api/v1/services/aigc/multimodal-generation/generation`，音频在
+   `output.audio.url`（一个临时 wav 直链），`output.audio.data` 是**空的**，
+   计费用 `usage.characters`。
+3. **`wanx2.1-i2v-turbo` 只出 5 秒，不接受 `duration`**。适配器的做法是照请求
+   裁到目标秒数（ffmpeg 重编码，不是 `-c copy` —— 5 秒片段里通常只有一个关键帧，
+   copy 切完还是 5 秒），**但按模型实际产出的秒数记账**。
+   要真正按秒生成就换 `wan2.5-i2v-preview`（这一家只有 `wan2.5-` / `wan2.6-` /
+   `wan2.7-` 开头的模型认 `duration`，适配器按前缀判断，不认的**不发**这个参数，
+   发了是提交即失败）。
+
+#### 一致性和景别，在这个接口上只能选一个
+
+`wanx2.1-imageedit` 只收**一张**输入图，而这张图同时承担了"这个人的脸"和
+"这个人的构图"两件事。实跑一集见到的现象：分镜写了 `medium` 和 `close` 两个景别，
+两张关键帧出来几乎一模一样，都是定妆照那张半身站姿 —— 特写没特起来。
+
+所以给了个开关，默认选一致性：
+
+```bash
+AI_DRAMA_DASHSCOPE_IMAGE_USE_PORTRAIT=0   # 关掉 → 退回纯文生图
+```
+
+关掉之后景别听分镜的，代价是每一镜的脸都会重新长（跨镜一致性只剩提示词描述撑着）。
+**脸漂了观众一眼就看出来，景别不准只是"不够讲究"** —— 这是默认值的理由。
+
 ### 接一个真厂商要写多少
 
 打开 `ai_drama/providers/_template.py`，照着手写一个类，
@@ -619,6 +714,10 @@ class MyVideo(VideoProvider):
 ```
 
 大约 30–60 行。**不用碰 pipeline、不用碰 stages、不用碰 store。**
+
+（这是**一种形态**的量。六种形态 + 异步任务轮询 + 时长裁切 + 错误码翻译，
+一共写了一千行左右 —— 见 `ai_drama/providers/dashscope.py`，
+`tests/test_dashscope.py` 里那 38 条用例全都**不联网**。）
 
 四个必须遵守的约定：
 - 错误统一抛 `ProviderError(msg, retryable=True/False)`。
@@ -690,9 +789,9 @@ python -m pytest
 ```
 
 （`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
-就行。加 `-q` 会只剩进度点、看不到 `322 passed` 那行汇总。）
+就行。加 `-q` 会只剩进度点、看不到 `364 passed` 那行汇总。）
 
-覆盖范围（322 个用例）：
+覆盖范围（364 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
@@ -720,6 +819,7 @@ python -m pytest
 | `test_job_ledger.py` | 提交后**开始轮询之前** job_id 已在库里、resume 只认领不重新提交（用 Ctrl-C 模拟进程被打断）、厂商报失败时记录被清掉、超时与失败被区分开、老库自动补列 |
 | `test_subtitles.py` | 剧本行去说话人与表演提示、SRT 时间戳进位、**ASS 的 PlayRes 就是画布尺寸**（字号才是像素）、`{}`/`\` 被转义、**像素级断言字幕真的烧进了画面**、关掉烧录仍留下可用的 SRT |
 | `test_web.py` | **读不出去**（白名单只有 `runs/` 与 `projects/`；`..`、绝对路径、盘符、数据库、`_work/` 一律 404，而"不存在"与"不许看"回同一个 404）、**不许自己编**（`None` 与 `exists=False` 是两回事、坏 json 不炸页面）、写方法一律 405、绑非回环要显式开关、**Range 请求**（成片能拖进度）、删掉一个产物页面上显示"文件没了"、**资产汇总的形状和页面读的那个形状是同一条断言** |
+| `test_dashscope.py` | 真厂商适配器的**纯函数层**（38 条，**一次网络调用都没有**）：一个名字注册六种形态、缺 key 当场报错且 `retryable=False`、`health()` 不联网、HTTP 码与厂商错误码各自映射到"该不该重试"、**只认三档出图尺寸**（传别的直接 InvalidParameter）、**不认 duration 的模型一个字节都不发这个参数**、音色映射（认不出就原样透传）、**视频按实际产出秒数计价**、裁切开关、`USE_PORTRAIT=0` 时确实退回文生图 |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
 而不是失败 —— 环境缺失不该被误报成代码缺陷。
@@ -768,6 +868,12 @@ python -m pytest
 - [x] **Web 界面**：`python run.py web` —— 只读的本地查看器，六个 tab，
       stdlib + 原生 JS、零构建。默认只绑回环，不提供任何写入口
       （见设计决定 19）
+- [x] **接一家真厂商**：`ai_drama/providers/dashscope.py`（阿里云百炼），
+      一个名字覆盖六种形态，只用 stdlib。异步任务轮询、时长裁切、
+      错误码到 `retryable` 的映射、按实际产出计费，见「已经接好的一家」
+- [x] **占位图喂给真模型要出声**：`t2i` 还是 dryrun、而 `image` 已经是真厂商时，
+      真模型会把那张"写着提示词的分镜卡"当成底图去改，出来还是卡片。
+      流水线现在会在开工前把这种配置组合**点名报出来**（见设计决定 3）
 
 ## 许可
 

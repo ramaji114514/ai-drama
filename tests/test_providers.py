@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import inspect
+import re
 from pathlib import Path
+from typing import Any, List
 
 import pytest
 
@@ -99,7 +102,25 @@ def test_unknown_provider_fails_loudly():
         registry.create("video", "no-such-vendor")
 
 
-def test_all_registered_providers_satisfy_the_interfaces():
+def _create_with_dummy_key(kind: str, name: str, monkeypatch):
+    """真厂商的构造函数会检查 key，缺了直接抛 —— 这是对的。
+
+    但"检查接口有没有漂"不该被一个 key 挡住，也不该为此花钱。
+    所以这里从报错里把**它要的那个环境变量名**读出来，塞个假值再试一次：
+    接口对不上（少参数、方法名错）照样会炸，而网络调用一次都不会发生。
+    """
+    try:
+        return registry.create(kind, name)
+    except ProviderError as exc:
+        missing = re.findall(r"AI_DRAMA_[A-Z0-9_]+", str(exc))
+        if not missing:
+            raise
+        for env in missing:
+            monkeypatch.setenv(env, "dummy-key-for-interface-check")
+        return registry.create(kind, name)
+
+
+def test_all_registered_providers_satisfy_the_interfaces(monkeypatch):
     """注册表里的每个 provider 都必须真的是对应抽象的子类。
 
     duck typing 在这里不够：接口漂了（比如 submit 少个参数）
@@ -114,8 +135,52 @@ def test_all_registered_providers_satisfy_the_interfaces():
     }
     for kind, base in kinds.items():
         for name in registry.available()[kind]:
-            obj = registry.create(kind, name)
+            obj = _create_with_dummy_key(kind, name, monkeypatch)
             assert isinstance(obj, base), f"{kind}/{name} 不是 {base.__name__}"
+
+
+def test_providers_accept_every_keyword_their_callers_pass(monkeypatch):
+    """真实现必须收得下 dryrun 收得下的全部关键字。
+
+    这条踩过：`stage01_script.py:138` 会传 `scene_count=`，
+    而 `base.TextProvider.generate()` 的抽象签名里**没有**这个参数 ——
+    照着 ABC 写适配器，第一次真跑就 `TypeError`，一分钱产出都没有。
+    ABC 是骨架自己写的，它漏了参数，所以"实现了 ABC"并不足以保证能跑。
+
+    判据取 dryrun：它是默认实现，也是唯一被端到端跑通过的实现，
+    调用方传什么都以它为准。
+    """
+    for kind in ("text", "image", "video", "audio", "t2i", "vision"):
+        ours = _create_with_dummy_key(kind, "dashscope", monkeypatch)
+        ref = registry.create(kind, "dryrun")
+        for meth in _public_methods(ref):
+            mine = getattr(ours, meth, None)
+            assert mine is not None, f"dashscope 缺方法 {kind}.{meth}"
+            # 只比"dryrun 能收的、真实现也得能收"这一个方向：
+            # 真实现多几个自己的旋钮（比如 timeout）是允许的。
+            allowed = set(inspect.signature(_impl_of(ref, meth)).parameters)
+            missing = allowed - set(inspect.signature(_impl_of(ours, meth)).parameters)
+            assert not missing, (
+                f"{kind}.dashscope.{meth} 少了参数 {sorted(missing)}；"
+                f"调用方按 dryrun 的签名传参，少一个就是 TypeError"
+            )
+
+
+def _impl_of(obj: Any, meth: str):
+    """取到方法本身（不绑定实例），这样签名里不会多一个 self。"""
+    return inspect.unwrap(getattr(type(obj), meth))
+
+
+def _public_methods(obj: Any) -> List[str]:
+    """provider 的公开方法 = 非下划线、可调用、且不是 health()。"""
+    out = []
+    for name in dir(type(obj)):
+        if name.startswith("_") or name == "health":
+            continue
+        if not callable(getattr(type(obj), name)):
+            continue
+        out.append(name)
+    return out
 
 
 def test_video_provider_submit_poll_contract(workspace: Path):
