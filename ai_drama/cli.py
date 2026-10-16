@@ -829,6 +829,27 @@ def cmd_asset(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """只读 Web 界面。
+
+    刻意**没有**"在网页上开始生成"这个功能：花钱的那条路只留一条
+    （`run` / `resume`），它带着预算闸门、断点续跑和 job_id 台账。
+    网页再加一个入口，这些就得重新想一遍 —— 谁按的、按了几次、上一次那个
+    还在跑吗。这里补的是"能看见"，不是"能跑"。
+    """
+    from .web.app import serve
+
+    load_env()
+    root = _root_of(args)
+    db = Path(args.db) if getattr(args, "db", None) else None
+    return serve(
+        root, db,
+        host=args.host, port=int(args.port),
+        limit=int(args.limit), quiet=not args.verbose,
+        allow_remote=bool(args.allow_remote), open_browser=bool(args.open),
+    )
+
+
 def cmd_models(args: argparse.Namespace) -> int:
     """看模型目录，以及**骨架此刻真正读到的是哪一份**。
 
@@ -1157,6 +1178,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.add_argument("--json", action="store_true", help="附结构化 JSON")
     sp.set_defaults(func=cmd_faces)
+
+    sp = sub.add_parser("web", help="只读 Web 界面：分镜 / 时间轴 / 质检 / 成本 / 血缘")
+    add_common(sp)
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="绑定的地址（默认 127.0.0.1；别的地址要 --allow-remote）")
+    sp.add_argument("--port", type=int, default=8765, help="端口（默认 8765）")
+    sp.add_argument("--open", action="store_true", help="起来后自动打开浏览器")
+    sp.add_argument("--allow-remote", action="store_true",
+                    help="允许绑到非回环地址 —— 同一网络的人都能看到这些片子")
+    sp.add_argument("--limit", type=int, default=50, help="侧栏列多少条 run")
+    sp.add_argument("-v", "--verbose", action="store_true", help="打印每个请求")
+    sp.set_defaults(func=cmd_web)
 
     return p
 
