@@ -235,7 +235,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:                           # noqa: N802
         self._method_not_allowed()
 
+    def _drain_request_body(self, limit: int = 1 << 20) -> None:
+        """把请求体读掉，再回 405。
+
+        不读就走，socket 里留着没被消费的数据，连接关闭时 Windows 会发 RST ——
+        客户端收到的不是那个礼貌的 405，而是 `ConnectionAbortedError`。
+        这条是被一次偶发失败的测试逼出来的：那个用例单跑必过、全量偶挂。
+
+        只读服务没有"解析这个 body"的需求，所以读完就扔。超过 `limit` 的不读：
+        让一个匿名请求决定我们花多少内存，是把只读做成了可被喂胖。
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if 0 < n <= limit:
+            self.rfile.read(n)
+
     def _method_not_allowed(self) -> None:
+        self._drain_request_body()
         body = json.dumps(
             {"error": "这个服务是只读的。要跑片子请用 CLI 的 run / resume —— "
                       "花钱的那条路只留一条，才能把预算闸门和 job_id 台账都守住。"},

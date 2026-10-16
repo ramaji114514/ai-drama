@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import urllib.error
 import urllib.parse
@@ -234,6 +235,40 @@ def test_writes_are_refused(workspace: Path):
         status, body = _post(base + "/api/runs")
         assert status == 405
         assert "只读" in json.loads(body)["error"]
+
+
+def test_a_write_with_a_big_body_still_gets_a_clean_405(workspace: Path):
+    """带请求体的写请求也得拿到那个 405 —— 而不是"连接被掐断"。"""
+    with serving(workspace) as (base, _app):
+        status, body = _post(base + "/api/runs", b"x" * 65536)
+        assert status == 405
+        assert "只读" in json.loads(body)["error"]
+
+
+def test_the_refusal_reads_the_request_body_first(workspace: Path):
+    """回 405 之前先把请求体读掉。
+
+    不读就回包，socket 里会留着没被消费的数据，关闭连接时 Windows 会发 RST，
+    客户端拿到的是 `ConnectionAbortedError`，看不到那句"这个服务是只读的"。
+    这就是全量跑时那条偶发失败的成因：单跑必过、跑久了偶尔挂 ——
+    而偶发的测试等于没有测试。
+
+    用原生 socket 直接掐这个行为：头里声称还有 1000 字节 body 没发过来，
+    **真读了**的服务端会停下来等，**没读**的会立刻回包。
+    """
+    with serving(workspace) as (base, _app):
+        host, _, port = base.replace("http://", "").partition(":")
+        with socket.create_connection((host, int(port)), timeout=10) as s:
+            s.sendall(
+                b"POST /api/runs HTTP/1.1\r\nHost: x\r\n"
+                b"Content-Length: 1000\r\n\r\n"
+            )
+            s.settimeout(0.5)
+            with pytest.raises((socket.timeout, TimeoutError)):
+                s.recv(1)                      # body 还没发完，服务端不该已经回包
+            s.sendall(b"y" * 1000)
+            s.settimeout(10)
+            assert b"405" in s.recv(4096)
 
 
 def test_traversal_over_http_is_a_404(workspace: Path):
