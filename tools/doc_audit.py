@@ -44,7 +44,11 @@ DOCS = (
     "docs/adding-a-provider.md",
     "docs/making-a-series.md",
 )
-_PATH_RE = re.compile(r"`([a-zA-Z_][\w./-]*\.(?:py|md|yaml|yml|json|txt|env))`")
+_PATH_RE = re.compile(
+    r"`([a-zA-Z_][\w./-]*\.(?:py|md|yaml|yml|json|txt|env))`"
+    # `web/api.py`、`static/app.js` 这类写法不带首字母前缀，靠这一条兜住
+    r"|`((?:web|static|docs|tests|tools|core|providers|stages)/[\w./-]+)`"
+)
 _CMD_RE = re.compile(r"python run\.py ([a-z][a-z-]*)")
 
 # 文档里短写文件名（`base.py`、`test_qc.py`）是刻意的，不必写全路径。
@@ -52,6 +56,14 @@ _CMD_RE = re.compile(r"python run\.py ([a-z][a-z-]*)")
 # 那类问题（字幕当年就是这么露馅的：`media.py` 存在，但里面没有任何字幕函数，
 # 所以这里还得配一条"关键词也要能在代码里找到"的检查）。
 _BASENAME_CACHE: Dict[str, List[Path]] = {}
+
+#: 认这些扩展名 —— 用来把"模块.属性"（`core/identity.CHECK_PROMPT`）和真正的
+#: 文件路径区分开。少了这一条，审计会把代码里的属性引用报成"文档提到但不存在的文件"，
+#: 而一个爱喊狼来了的检查器很快就会被无视。
+_KNOWN_EXT = {
+    ".py", ".md", ".yaml", ".yml", ".json", ".txt", ".env",
+    ".js", ".css", ".html", ".sh",
+}
 
 
 def _all_files(root: Path) -> List[Path]:
@@ -100,8 +112,15 @@ def broken_references(root: Path) -> Dict[str, Dict[str, List[str]]]:
             continue
         text = p.read_text(encoding="utf-8")
         for m in _PATH_RE.finditer(text):
-            rel = m.group(1)
-            if rel in RUNTIME_ARTIFACTS or rel in EXTERNAL_REFS:
+            rel = (m.group(1) or m.group(2)).rstrip("/")
+            if not rel or rel in RUNTIME_ARTIFACTS or rel in EXTERNAL_REFS:
+                continue
+            # 纯目录名（`web/static/`）只要求目录存在
+            if rel.endswith("/") or (root / rel).is_dir():
+                continue
+            # `core/identity.CHECK_PROMPT` 是"模块.属性"，不是路径 —— 认扩展名
+            name = Path(rel).name
+            if "." in name and Path(name).suffix.lower() not in _KNOWN_EXT:
                 continue
             if not _resolve(root, rel, files):
                 bad_paths.setdefault(rel, []).append(doc)
@@ -132,6 +151,10 @@ PROMISES = (
     ("资产台账", r"def reconcile|def scan_run_dir"),
     ("血缘", r"def lineage|asset_edges"),
     ("画幅", r"def normalize_aspect|def frame_size"),
+    # 查看器：文档说它是只读的，那就得真有那道守卫；说它按目录白名单读磁盘，
+    # 那就得真有那个白名单
+    ("只读查看器", r"def make_server|只读"),
+    ("目录白名单", r"def safe_media_path|MEDIA_PREFIXES"),
 )
 
 
