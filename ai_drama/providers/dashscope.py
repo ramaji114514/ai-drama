@@ -51,13 +51,16 @@ import mimetypes
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import (
     AudioProvider,
     ImageProvider,
+    LipSyncProvider,
     ProviderCaps,
     ProviderError,
     T2IProvider,
@@ -79,6 +82,9 @@ CHAT_PATH = "/compatible-mode/v1/chat/completions"
 T2I_PATH = "/api/v1/services/aigc/text2image/image-synthesis"
 IMAGE_EDIT_PATH = "/api/v1/services/aigc/image2image/image-synthesis"
 VIDEO_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
+#: VideoRetalk（口型同步）挂在与图生视频**同一个** path 上，靠 model 名区分。
+LIPSYNC_PATH = "/api/v1/services/aigc/image2video/video-synthesis"
+UPLOAD_PATH = "/api/v1/uploads"
 TASK_PATH = "/api/v1/tasks/{task_id}"
 
 # 这两种 HTTP 状态是可以重试的：429 是排队挤不上，5xx 是对方抖动。
@@ -109,6 +115,8 @@ class _Client:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # 下载用的 opener 对，见 _openers()。建一次就够，别每次下载都重建。
+        self._opener_cache: Optional[List[Tuple[str, Any]]] = None
 
     # —— 内部
 
@@ -138,6 +146,13 @@ class _Client:
             # 连不上、DNS 挂了、超时 —— 这类都值得重试
             raise ProviderError(f"{label or method} 连不上: {exc.reason}",
                                 retryable=True, provider="dashscope") from None
+        except Exception as exc:  # noqa: BLE001
+            # `http.client.RemoteDisconnected` 是 ConnectionResetError、不是
+            # URLError，上面那条接不住它。不兜这一层，调用方会收到一个
+            # 来自 http.client 的堆栈，而它跟"百炼出错了"完全看不出关系。
+            raise ProviderError(f"{label or method} 连接被掐断: "
+                                f"{type(exc).__name__}: {exc}",
+                                retryable=True, provider="dashscope") from None
 
     def _json(self, raw: bytes, label: str) -> Dict[str, Any]:
         try:
@@ -153,47 +168,203 @@ class _Client:
     # —— 对外
 
     def post(self, path: str, payload: Dict[str, Any], *, async_: bool = False,
-             timeout: Optional[float] = None, label: str = "") -> Dict[str, Any]:
-        extra = {"X-DashScope-Async": "enable"} if async_ else None
+             oss: bool = False, timeout: Optional[float] = None,
+             label: str = "") -> Dict[str, Any]:
+        extra: Dict[str, str] = {}
+        if async_:
+            extra["X-DashScope-Async"] = "enable"
+        if oss:
+            # 用 `oss://` 开头的临时 URL 时必须显式带这个头，
+            # 否则服务端不认这个协议，报"URL 无效"。
+            extra["X-DashScope-OssResourceResolve"] = "enable"
         raw = self._request(self.base_url + path, data=json.dumps(payload).encode("utf-8"),
-                            method="POST", extra=extra, timeout=timeout,
+                            method="POST", extra=extra or None, timeout=timeout,
                             label=label or path)
         return self._json(raw, label or path)
 
-    def get(self, path: str, *, timeout: Optional[float] = None,
-            label: str = "") -> Dict[str, Any]:
-        raw = self._request(self.base_url + path, timeout=timeout, label=label or path)
+    def get(self, path: str, *, query: Optional[Dict[str, str]] = None,
+            timeout: Optional[float] = None, label: str = "") -> Dict[str, Any]:
+        url = self.base_url + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        raw = self._request(url, timeout=timeout, label=label or path)
         return self._json(raw, label or path)
 
-    def download(self, url: str, dest: Path, *, timeout: float = 300.0) -> None:
+    # —— opener：直连与走系统代理各一个
+
+    def _openers(self) -> List[Tuple[str, Any]]:
+        """两个 opener，按"先直连、再系统代理"的顺序试。
+
+        为什么非要有一个"直连"的：百炼给的产物地址是**带签名的 OSS 直链**，
+        不需要任何凭证，谁拿到都能下。而 Windows 上的系统代理设置会被
+        urllib **自动**读进来（`getproxies()` 直接读注册表），curl 不读 ——
+        所以会出现"同一条地址 curl 秒下、urllib 必然超时"这种看着像
+        "百炼给的地址是坏的"的怪事。
+
+        实测踩过：产物地址是 `http://dashscope-xxxx.oss-cn-shanghai.aliyuncs.com/...`，
+        `urllib` 走系统代理时稳定 `TimeoutError` / `RemoteDisconnected`，
+        而 `curl` 直连 200。所以先直连，直连不通再退回系统代理
+        —— 后者是有些内网唯一的出门方式，不能直接扔掉。
+        """
+        if self._opener_cache is None:
+            self._opener_cache = [
+                ("直连", urllib.request.build_opener(urllib.request.ProxyHandler({}))),
+                ("系统代理", urllib.request.build_opener()),
+            ]
+        return self._opener_cache
+
+    def download(self, url: str, dest: Path, *, timeout: float = 300.0,
+                 attempts: int = 3) -> None:
         """把产物拉到 dest。
 
         不带头 —— 百炼给的产物地址是带签名的 OSS 直链，塞上 Authorization
         反而会被 OSS 拒掉。
+
+        这里要比别处多兜两层：
+
+          * `http.client.RemoteDisconnected` 是 `ConnectionResetError`，
+            **不是** `URLError`，`except URLError` 接不住它，会以一个和
+            本模块毫不相干的堆栈冒到调用方去。
+          * 产物已经付过钱了，所以既重试、也换出口（直连 / 系统代理）再试。
         """
         req = urllib.request.Request(url, headers={"User-Agent": "ai-drama/0.1"})
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".part")
+        tried: List[str] = []
+        for attempt in range(1, max(1, attempts) + 1):
+            for label, opener in self._openers():
+                try:
+                    with opener.open(req, timeout=timeout) as resp, \
+                            open(tmp, "wb") as fh:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+                except urllib.error.HTTPError as exc:
+                    # 签名过期 / 地址被改过这类重试无意义，立刻报
+                    tmp.unlink(missing_ok=True)
+                    raise ProviderError(
+                        f"下载产物失败 HTTP {exc.code}",
+                        retryable=exc.code in _RETRYABLE_HTTP,
+                        provider="dashscope") from None
+                except Exception as exc:  # noqa: BLE001  URLError / RemoteDisconnected / 超时
+                    tmp.unlink(missing_ok=True)
+                    tried.append(f"{label}→{type(exc).__name__}: {exc}")
+                    continue
+                if not tmp.stat().st_size:
+                    tmp.unlink(missing_ok=True)
+                    tried.append(f"{label}→拿到 0 字节")
+                    continue
+                tmp.replace(dest)
+                return
+            if attempt < attempts:
+                time.sleep(2.0 * attempt)
+        raise ProviderError(f"下载产物失败（试了 {attempts} 轮）：" + "；".join(tried[-3:]),
+                            retryable=True, provider="dashscope")
+
+    def upload(self, path: Path, *, model: str, timeout: float = 900.0) -> str:
+        """把本地文件传进百炼的临时存储，拿回一个 `oss://` 开头的地址。
+
+        为什么非绕这一道：口型同步只收**公网可访问**的 http(s) 或 `oss://`
+        地址，不像图片接口那样吃 data URL（同样一个 base64 视频，几 MB 起步，
+        塞进请求体也是自找没趣）。所以本地片段必须先上传。
+
+        三条容易踩的规矩，都写在文档里：
+
+          * 文件**和模型绑定** —— 这里报 `model` 必须和后面调用时的 model
+            一模一样，name 对不上时报"文件不存在"，不说为什么。
+          * `x-oss-forbid-overwrite=true` —— 同名文件传第二次会被拒。
+            所以 key 里的文件名带一串随机后缀，不靠文件名去区分。
+          * 凭证 300 秒有效、URL 48 小时有效。一次调用里用完即可。
+
+        上传的那个 host 不是百炼的 API host、也不要 Authorization 头，
+        所以这里绕开 `_request` 自己拼。
+        """
+        policy = self.get(UPLOAD_PATH, query={"action": "getPolicy", "model": model},
+                          label="取上传凭证").get("data") or {}
+        missing = [k for k in ("upload_host", "upload_dir", "oss_access_key_id",
+                               "signature", "policy") if not policy.get(k)]
+        if missing:
+            raise ProviderError(f"上传凭证里少了 {', '.join(missing)}：{str(policy)[:200]}",
+                                retryable=True, provider="dashscope")
+
+        # 文件名唯一：x-oss-forbid-overwrite 开着，重名会被拒。
+        name = f"{path.stem}-{uuid.uuid4().hex[:12]}{path.suffix}"
+        key = f"{policy['upload_dir']}/{name}"
+        fields = [
+            ("OSSAccessKeyId", policy["oss_access_key_id"]),
+            ("policy", policy["policy"]),
+            ("Signature", policy["signature"]),
+            ("key", key),
+            ("x-oss-object-acl", policy.get("x_oss_object_acl") or "private"),
+            ("x-oss-forbid-overwrite", policy.get("x_oss_forbid_overwrite") or "true"),
+            ("success_action_status", "200"),
+        ]
+
+        limit_mb = float(policy.get("max_file_size_mb") or 0) or 0.0
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if limit_mb and size_mb > limit_mb:
+            raise ProviderError(
+                f"{path.name} 有 {size_mb:.1f}MB，超过 {model} 允许的 {limit_mb:.0f}MB",
+                retryable=False, provider="dashscope")
+
+        # 表单体写到临时文件再以文件对象发出去 —— 视频几 MB 到几十 MB，
+        # 全读进内存没必要；设了 Content-Length 就不会退化成 chunked。
+        body = path.with_name(path.name + ".upload-body")
+        boundary = "----ai-drama" + uuid.uuid4().hex
+        sep = b"--" + boundary.encode("ascii") + b"\r\n"
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp, "wb") as fh:
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-        except urllib.error.HTTPError as exc:
-            tmp.unlink(missing_ok=True)
-            raise ProviderError(f"下载产物失败 HTTP {exc.code}",
-                                retryable=exc.code in _RETRYABLE_HTTP,
-                                provider="dashscope") from None
-        except urllib.error.URLError as exc:
-            tmp.unlink(missing_ok=True)
-            raise ProviderError(f"下载产物失败: {exc.reason}", retryable=True,
-                                provider="dashscope") from None
-        if not tmp.stat().st_size:
-            tmp.unlink(missing_ok=True)
-            raise ProviderError("下载产物拿到 0 字节", retryable=True, provider="dashscope")
-        tmp.replace(dest)
+            with open(body, "wb") as fh:
+                for k, v in fields:
+                    fh.write(sep)
+                    fh.write(f'Content-Disposition: form-data; name="{k}"'
+                             .encode("utf-8") + b"\r\n\r\n")
+                    fh.write(str(v).encode("utf-8") + b"\r\n")
+                # file 必须是最后一个表单域。
+                fh.write(sep)
+                fh.write(f'Content-Disposition: form-data; name="file"; '
+                         f'filename="{name}"'.encode("utf-8") + b"\r\n")
+                fh.write(b"Content-Type: application/octet-stream\r\n\r\n")
+                with open(path, "rb") as src:
+                    while True:
+                        chunk = src.read(1 << 20)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                fh.write(b"\r\n--" + boundary.encode("ascii") + b"--\r\n")
+            total = body.stat().st_size
+
+            req = urllib.request.Request(
+                policy["upload_host"], method="POST",
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+            with open(body, "rb") as fh:
+                req.data = fh                                    # 文件对象：流式发
+                # Content-Length 必须**在** `req.data =` 之后设：
+                # Request.data 的 setter 会顺手把已有的 Content-Length 删掉
+                # （为了不让它和新的 body 对不上，CPython bpo-16464）。
+                # 先设就会被无声地抹掉，退化成 chunked 传输 —— OSS 的表单
+                # 上传不吃 chunked，报的错还跟长度毫无关系。
+                req.add_header("Content-Length", str(total))
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        if resp.status != 200:
+                            raise ProviderError(
+                                f"上传 {path.name} 失败 HTTP {resp.status}",
+                                retryable=resp.status >= 500, provider="dashscope")
+                except urllib.error.HTTPError as exc:
+                    detail = exc.read().decode("utf-8", "replace")[:300]
+                    raise ProviderError(
+                        f"上传 {path.name} 失败 HTTP {exc.code}: {detail}",
+                        retryable=exc.code in _RETRYABLE_HTTP,
+                        provider="dashscope") from None
+                except urllib.error.URLError as exc:
+                    raise ProviderError(f"上传 {path.name} 连不上: {exc.reason}",
+                                        retryable=True, provider="dashscope") from None
+        finally:
+            body.unlink(missing_ok=True)
+
+        return f"oss://{key}"
 
 
 def _parse_error(raw: str) -> Tuple[str, str]:
@@ -289,6 +460,22 @@ class _DashScope:
                                 retryable=False, provider=self.name) from None
         return cny / self.usd_rate
 
+    def _price_usd(self, key: str, default: str) -> float:
+        """单价：**官方报价本来就是美元**的那些，不再折算。
+
+        价目表两种都有 —— 大多是元（走 `_price`），口型同步（国际站）标的
+        是 $0.011469/秒。把美元价也塞进"元÷汇率"那台机器，汇率先行就把
+        它的含义悄悄改掉了，所以单开一个入口，环境变量也分开叫：
+
+            AI_DRAMA_DASHSCOPE_PRICE_USD_LIPSYNC=0.011469
+        """
+        raw = os.environ.get(f"AI_DRAMA_DASHSCOPE_PRICE_USD_{key}")
+        try:
+            return float(raw) if raw else float(default)
+        except ValueError:
+            raise ProviderError(f"AI_DRAMA_DASHSCOPE_PRICE_USD_{key}={raw!r} 不是数字",
+                                retryable=False, provider=self.name) from None
+
     def health(self) -> Dict[str, Any]:
         """doctor 会调它。**不发网络请求** —— doctor 不该为了探活而花钱。"""
         return {"name": self.name, "kind": self.kind, "ok": True,
@@ -306,6 +493,11 @@ class _DashScope:
             return media
         except Exception:  # noqa: BLE001
             return None
+
+    def _probe(self, path: Path) -> Optional[float]:
+        """量一段媒体有多长。量不出来返回 None（调用方各自决定怎么办）。"""
+        media = self._media()
+        return media.try_probe_duration(path) if media else None
 
 
 # —————————————————————————————————————————————————————————— 1. 文本
@@ -780,10 +972,6 @@ class DashScopeVideo(_DashScope, VideoProvider):
 
     # —— 裁切
 
-    def _probe(self, path: Path) -> Optional[float]:
-        media = self._media()
-        return media.try_probe_duration(path) if media else None
-
     def _trim_to(self, path: Path, want: float, produced: Optional[float] = None) -> bool:
         """产物比请求时长长就裁掉尾巴。返回是否真的裁了。
 
@@ -915,3 +1103,308 @@ class DashScopeAudio(_DashScope, AudioProvider):
                 "amount": round(seconds, 3), "money": 0.0,
                 "note": "[dashscope] 百炼没有配乐生成接口 —— 这是本地合成的占位音轨，"
                         "不是真 BGM；换 AI_DRAMA_AUDIO 到别的厂商才有真配乐"}
+
+
+# —————————————————————————————————————————————————————————— 7. 口型同步
+
+
+#: VideoRetalk 的官方报价（国际站）：**$0.011469 / 秒**，按产出视频的秒数计。
+#: 它是少数按美元标的接口，所以走 `_price_usd` 而不是 `_price`。
+#: 国内站价目表按元就设 `AI_DRAMA_DASHSCOPE_PRICE_LIPSYNC`（元/秒）。
+LIPSYNC_USD_PER_SECOND = "0.011469"
+
+#: 文档写死的输入区间。越界**本地就拦** —— 发过去也是 400，
+#: 白排一次队，还看不到真正的原因。
+LIPSYNC_MIN_SECONDS = 2.0
+LIPSYNC_MAX_SECONDS = 120.0
+
+#: 画面的长边和短边都必须落在这个区间里。**短边这条最容易被撞上**：
+#: 竖屏 9:16 的 480P 是 464x832，短边 464 就不够。
+LIPSYNC_MIN_SIDE = 640
+LIPSYNC_MAX_SIDE = 2048
+
+
+@register("dashscope", "lipsync")
+class DashScopeLipsync(_DashScope, LipSyncProvider):
+    """百炼的口型同步：VideoRetalk。
+
+    它和别的形态不一样的地方一句话：**输入输出都是已经渲好的片段**。
+    它不生成画面，只把嘴按音轨重画一遍。
+
+    两条契约（`base.LipSyncProvider` 的 docstring 写了为什么）：
+
+      1. 出去的东西**不带音轨**。音轨由 concat 统一铺一次；这里再留一条，
+         成片里每句台词都会说两遍。
+      2. **时长不许变**。stage07 按 ffprobe 量出的实际时长累加时间轴，
+         这里一改，后面所有镜头的声音都会错位。
+
+    所以拿到产物后一定自己量一次，对不上就裁/补到原长，而不是相信接口
+    报的数。`video_extension=False` 也是刻意的：让它出"和输入一样长"的
+    片子，别自作主张把画面延长去将就音轨。
+
+    还有一处和图片接口不同：**它不吃 data URL**。图片那边 base64 一塞就完，
+    视频几 MB 起步，必须先传进百炼的临时存储换个 `oss://` 地址 ——
+    这也是本文件里唯一用到 `_Client.upload` 的地方。
+    """
+
+    kind = "lipsync"
+    default_model = "videoretalk"
+    model_env = "AI_DRAMA_DASHSCOPE_LIPSYNC_MODEL"
+
+    #: 轮询总预算。口型同步比出图慢得多：排队 + 逐帧重画，几分钟是常态。
+    POLL_BUDGET = 900.0
+
+    def __init__(self, **kw: Any):
+        super().__init__(**kw)
+        self.price_second = self._price_usd("LIPSYNC", LIPSYNC_USD_PER_SECOND)
+
+    # —— 对外
+
+    def sync(self, video: Path, audio: Optional[Path], dest: Path, *,
+             shot_label: str = "", scene: str = "") -> Usage:
+        video = Path(video)
+        dest = Path(dest)
+        if not (video.exists() and video.stat().st_size > 0):
+            raise ProviderError(f"要同步的片段不存在或是空的：{video}",
+                                retryable=False, provider=self.name)
+
+        has_audio = bool(audio and Path(audio).exists() and Path(audio).stat().st_size > 0)
+        if not has_audio:
+            # 没有音轨可对 —— 允许直接重编码过去，但**如实说明没同步过**。
+            # 上游（stage06）只挑有台词的镜头调这里，走到这条支路通常是
+            # 配音文件被挪走或没生成成功。
+            self._write_silent(video, dest)
+            seconds = self._probe(dest) or self._probe(video) or 0.0
+            return self._usage(seconds, synced=False,
+                               notes=["[dashscope] 这一镜没有配音文件，只做了去音轨重编码，"
+                                      "**没有做口型同步**"])
+
+        want = self._probe(video)
+        if want is None:
+            raise ProviderError(
+                f"量不出 {video.name} 的时长，没有基准就没法保证同步后长度不变",
+                retryable=False, provider=self.name)
+        if not (LIPSYNC_MIN_SECONDS < want < LIPSYNC_MAX_SECONDS):
+            raise ProviderError(
+                f"{self.model} 只收 {LIPSYNC_MIN_SECONDS:g}s 到 {LIPSYNC_MAX_SECONDS:g}s 的片段，"
+                f"这一镜是 {want:.2f}s —— 拆镜或换个实现（见 docs/adding-a-provider.md）",
+                retryable=False, provider=self.name)
+
+        media = self._media()
+        if media is None:
+            raise ProviderError("口型同步要用 ffmpeg 对齐音轨，但 core.media 导不进来",
+                                retryable=False, provider=self.name)
+
+        work = dest.with_name(dest.stem + ".sync")
+        work.mkdir(parents=True, exist_ok=True)
+        try:
+            # 音轨先对齐到画面长度：`video_extension=False` 时产物取
+            # min(画面, 音轨)，音轨短了产物就跟着短 —— 那是契约 2 的雷。
+            # 先补/裁成一样长，产物自然就是画面长度。
+            fitted = work / "audio.wav"
+            self._fit_audio(media, Path(audio), fitted, want)
+
+            # 接口要求长边和短边都在 640~2048。竖屏 480P 是 464x832，
+            # 短边不够 —— 放大到够格再传，产物回来再缩回原尺寸
+            # （尺度必须还原：stage07 要拿它和别的镜头拼在一起）。
+            size = self._size(media, video)
+            upload_video = video
+            notes_pre: List[str] = []
+            if size and min(size) < LIPSYNC_MIN_SIDE:
+                upload_video = work / "upload.mp4"
+                self._upscale(media, video, upload_video, size)
+                notes_pre.append(
+                    f"输入 {size[0]}x{size[1]} 短边不足 {LIPSYNC_MIN_SIDE}，"
+                    f"已放大到上传要求的最小尺寸、产物再缩回原尺寸")
+
+            video_url = self.client.upload(upload_video, model=self.model)
+            audio_url = self.client.upload(fitted, model=self.model)
+
+            data = self.client.post(LIPSYNC_PATH, {
+                "model": self.model,
+                "input": {"video_url": video_url, "audio_url": audio_url},
+                # False：出和输入一样长的片子。True 会把画面拉长去就音轨，
+                # 那就直接违反契约 2 了。
+                "parameters": {"video_extension": False},
+            }, async_=True, oss=True, timeout=180.0, label=f"lipsync/{self.model}")
+            task_id = str((data.get("output") or {}).get("task_id") or "")
+            if not task_id:
+                raise ProviderError(f"口型同步没拿到 task_id: {str(data)[:200]}",
+                                    retryable=True, provider=self.name)
+
+            url = self._wait(task_id)
+            raw = work / "raw.mp4"
+            self.client.download(url, raw)
+
+            note = self._normalize(media, raw, dest, want, size=size)
+            got = self._probe(dest) or want
+            notes = [f"[{self.model}]"] + notes_pre
+            if note:
+                notes.append(note)
+            # 归一化没能生效（比如没装 ffmpeg）：宁可不交，也不交一个
+            # 会让后面所有镜头错位的产物 —— stage06 会把它记成这一镜失败，
+            # 单独重跑一次就好。
+            if abs(got - want) > 0.12:
+                raise ProviderError(
+                    f"同步后时长是 {got:.2f}s，输入是 {want:.2f}s —— "
+                    f"差得太多（>0.12s），收下就会挪动后面所有镜头的时间轴",
+                    retryable=False, provider=self.name)
+            return self._usage(got, synced=True, notes=notes, shot_label=shot_label)
+        finally:
+            for f in work.glob("*"):
+                f.unlink(missing_ok=True)
+            work.rmdir()
+
+    # —— 轮询
+
+    def _wait(self, task_id: str) -> str:
+        deadline = time.monotonic() + self.POLL_BUDGET
+        delay = 5.0
+        while time.monotonic() < deadline:
+            data = self.client.get(TASK_PATH.format(task_id=task_id), timeout=60.0,
+                                   label="lipsync 轮询")
+            out = data.get("output") or {}
+            status = str(out.get("task_status") or "").upper()
+            if status == "SUCCEEDED":
+                url = str(out.get("video_url") or out.get("url") or "")
+                if not url:
+                    raise ProviderError(f"口型同步成功但没有产物地址: {str(out)[:200]}",
+                                        retryable=False, provider=self.name)
+                return url
+            if status in ("FAILED", "CANCELED", "UNKNOWN"):
+                code = str(out.get("code") or "")
+                msg = str(out.get("message") or status)
+                raise ProviderError(f"口型同步任务失败 [{code}] {msg}",
+                                    retryable=code in _RETRYABLE_CODES,
+                                    provider=self.name)
+            time.sleep(delay)
+            delay = min(delay * 1.5, 15.0)
+        raise ProviderError(f"口型同步轮询超过 {self.POLL_BUDGET:g}s 还没结果（task={task_id}）",
+                            retryable=True, provider=self.name)
+
+    # —— 音轨与时长
+
+    def _fit_audio(self, media, src: Path, dest: Path, want: float) -> None:
+        """把配音补/裁到正好 want 秒，并统一成 wav。
+
+        补静音用 `apad`、超长用 `-t`。同一刀切两件事：接口对音轨长度也有
+        自己的限制，而产物长度取决于它，所以不能让它比画面短。
+        """
+        ffmpeg = media.find_ffmpeg()
+        if not ffmpeg:
+            raise ProviderError("口型同步需要 ffmpeg 对齐音轨，但这台机器上没有",
+                                retryable=False, provider=self.name)
+        media.run([ffmpeg, "-y", "-v", "error", "-i", str(src),
+                   "-af", "apad", "-t", f"{want:.3f}",
+                   "-ar", "16000", "-ac", "1", str(dest)], timeout=300)
+
+    def _write_silent(self, video: Path, dest: Path) -> None:
+        """没有配音时的退路：重编码、去音轨，长度原样。"""
+        media = self._media()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if media is None:
+            raise ProviderError("没有 ffmpeg 就没法把片段写出去（core.media 导不进来）",
+                                retryable=False, provider=self.name)
+        ffmpeg = media.find_ffmpeg()
+        if not ffmpeg:
+            raise ProviderError("没有 ffmpeg 就没法把片段写出去",
+                                retryable=False, provider=self.name)
+        media.run([ffmpeg, "-y", "-v", "error", "-i", str(video), "-an",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                   "-pix_fmt", "yuv420p", str(dest)], timeout=600)
+
+    def _normalize(self, media, src: Path, dest: Path, want: float,
+                   size: Optional[Tuple[int, int]] = None) -> Optional[str]:
+        """src → dest：掐掉音轨、把长度对到 want、尺寸还原。返回说明（没动就 None）。
+
+        契约 1 和 2 都落实在这一个函数里，外加一件容易被忘的事：
+        **把画幅缩回去**。上传前为了满足短边要求放大过，产物就是放大后的
+        尺寸；不缩回来，stage07 拼接时这一镜和别的镜头分辨率不一样，
+        concat 会直接炸（或者拼出一段花屏）。
+        """
+        ffmpeg = media.find_ffmpeg()
+        if not ffmpeg:
+            return None
+        got = media.try_probe_duration(src)
+        filters: List[str] = []
+        notes: List[str] = []
+        if size:
+            filters.append(f"scale={size[0]}:{size[1]}:flags=lanczos")
+        if got is None:
+            notes.append("量不出产物时长，只能去音轨")
+        elif got > want + 0.05:
+            notes.append(f"接口出 {got:.2f}s，已裁回 {want:.2f}s")
+        elif got < want - 0.05:
+            pad = want - got
+            filters.append(f"tpad=stop_mode=clone:stop_duration={pad:.3f}")
+            notes.append(f"接口出 {got:.2f}s，已定格补 {pad:.2f}s 到 {want:.2f}s")
+
+        args = [ffmpeg, "-y", "-v", "error", "-i", str(src)]
+        if filters:
+            args += ["-vf", ",".join(filters)]
+        if got is not None and got > want + 0.05:
+            args += ["-t", f"{want:.3f}"]
+        args += ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                 "-pix_fmt", "yuv420p", str(dest)]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            media.run(args, timeout=600)
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderError(f"整理同步产物失败（{type(exc).__name__}: {exc}）",
+                                retryable=False, provider=self.name) from None
+        if not dest.exists() or not dest.stat().st_size:
+            raise ProviderError("整理同步产物之后文件是空的",
+                                retryable=False, provider=self.name)
+        return "；".join(notes) if notes else ""
+
+    def _size(self, media, path: Path) -> Optional[Tuple[int, int]]:
+        """量画面的像素尺寸。量不出来返回 None（那就按原样传，让接口去报错）。"""
+        probe = getattr(media, "probe_size", None)
+        if not probe:
+            return None
+        try:
+            return probe(path)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _upscale(self, media, src: Path, dest: Path, size: Tuple[int, int]) -> None:
+        """把短边撑到 LIPSYNC_MIN_SIDE 以上，比例不变。
+
+        这件事本身不增加任何细节 —— 只是为了过接口的尺寸门槛。
+        所以产物必须是**同一段画面**、时长一致，回来还要缩回原尺寸。
+        尺寸取偶数：yuv420p 的编码器不吃奇数。
+        """
+        scale = LIPSYNC_MIN_SIDE / min(size)
+        w = int(round(size[0] * scale / 2)) * 2
+        h = int(round(size[1] * scale / 2)) * 2
+        ffmpeg = media.find_ffmpeg()
+        if not ffmpeg:
+            raise ProviderError("没有 ffmpeg 就没法把画面撑到接口要求的尺寸",
+                                retryable=False, provider=self.name)
+        media.run([ffmpeg, "-y", "-v", "error", "-i", str(src),
+                   "-vf", f"scale={w}:{h}:flags=lanczos",
+                   "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                   "-pix_fmt", "yuv420p", str(dest)], timeout=600)
+
+    def _usage(self, seconds: float, *, synced: bool, notes: List[str],
+               shot_label: str = "") -> Usage:
+        """按**产出片段自己的秒数**计费。
+
+        不用输入的秒数：接口报的 `usage.video_duration` 是它实际处理了多久，
+        而它处理的正是我们交上去的那段画面 —— 两者本该一致，不一致时以
+        量出来的为准，因为那才是账单的依据。
+
+        `synced=False` 时（没配音、根本没调模型）**不记账** ——
+        重编码是我们自己在本地做的，一分钱没花。记成花钱会让预算闸门
+        留出一笔不存在的余量。
+        """
+        seconds = max(0.0, round(float(seconds), 3))
+        money = round(seconds * self.price_second, 6) if synced else 0.0
+        usage: Usage = {
+            "provider": self.name, "stage": "lipsync", "unit": "second",
+            "amount": seconds, "money": money, "model": self.model,
+            "note": "；".join(notes + ([] if synced else ["本地重编码，未调用模型"])),
+        }
+        if shot_label:
+            usage["shot_label"] = shot_label
+        return usage

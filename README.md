@@ -629,7 +629,7 @@ AI_DRAMA_DB=...               # SQLite 落在哪
 ### 已经接好的一家：阿里云百炼（DashScope）
 
 仓库里带了一个**完整可跑**的真厂商适配器 `ai_drama/providers/dashscope.py`
-（一个名字 `dashscope` 覆盖六种形态）——零第三方依赖，只用 stdlib 的 `urllib`。
+（一个名字 `dashscope` 覆盖七种形态）——零第三方依赖，只用 stdlib 的 `urllib`。
 
 ```bash
 # .env（不进版本库，.gitignore 里已经挡住了）
@@ -639,15 +639,18 @@ AI_DRAMA_T2I=dashscope        # 定妆照   wanx2.1-t2i-turbo
 AI_DRAMA_IMAGE=dashscope      # 关键帧   wanx2.1-imageedit / wanx2.1-t2i-turbo
 AI_DRAMA_VIDEO=dashscope      # 片段     wanx2.1-i2v-turbo
 AI_DRAMA_AUDIO=dashscope      # 配音     qwen3-tts-flash
+AI_DRAMA_LIPSYNC=dashscope    # 口型同步 videoretalk
 AI_DRAMA_VISION=dashscope     # 画面校验 qwen3-vl-plus（默认关，要显式打开）
 ```
 
-`AI_DRAMA_LIPSYNC` 和 `AI_DRAMA_SFX` 这一家没有对应接口，留 dryrun。
+`AI_DRAMA_SFX` 这一家没有对应接口，留 dryrun。
 
-**模型名都能用环境变量换**：`AI_DRAMA_DASHSCOPE_{TEXT,VISION,T2I,IMAGE,IMAGEEDIT,VIDEO,TTS}_MODEL`。
+**模型名都能用环境变量换**：`AI_DRAMA_DASHSCOPE_{TEXT,VISION,T2I,IMAGE,IMAGEEDIT,VIDEO,TTS,LIPSYNC}_MODEL`。
 单价也都能覆盖（`AI_DRAMA_DASHSCOPE_PRICE_*`，**按元写**，出门前按
 `AI_DRAMA_DASHSCOPE_USD_RATE` 折成美元记账），因为定价会变 ——
 代码里那份是 2026-10 华北2北京的官方价，写死只是给个不联网时的默认值。
+口型同步是唯一**按美元标价**的（`$0.011469/秒`），所以它的变量名是
+`AI_DRAMA_DASHSCOPE_PRICE_USD_LIPSYNC`。
 
 实测跑一集（1 场 2 镜，竖屏，`python run.py cost` 的输出）：
 
@@ -658,14 +661,16 @@ AI_DRAMA_VISION=dashscope     # 画面校验 qwen3-vl-plus（默认关，要显�
 | 关键帧 | `wanx2.1-imageedit` | ¥0.14/张 | $0.0394（两个镜头） |
 | 片段 | `wanx2.1-i2v-turbo` 480P | ¥0.24/秒 | **$0.3628**（见下） |
 | 配音 | `qwen3-tts-flash` | ¥0.8/万字符 | $0.0001 |
-| 口型 | dryrun（没接这家） | — | $0.0480（**估算值，不是真花钱**） |
+| 口型 | `videoretalk` | $0.011469/秒 | $0.0271（2.37s） |
 
-**合计约 ¥3.2 一集**（两镜）。注意片段那一行：分镜要的是 3.0s + 2.4s，
+**合计约 ¥3.7 一集**（两镜）。注意片段那一行：分镜要的是 3.0s + 2.4s，
 但模型各出 5 秒，所以账单按 10 秒算（≈¥2.65），不是按裁完的 5.4 秒 ——
-这正是设计决定 20 说的事。`cost` 报表里那 $0.0480 的口型费是 dryrun 自己
-报的估算值，真接了口型同步厂商才会变。
+这正是设计决定 20 说的事。
 
-#### 这一家有三个坑，都写在适配器注释里了，这里再说一遍
+再往后一次真跑（换了一集、开了口型同步）的账：**$0.4901**，
+其中片段 $0.3628、口型 $0.0271、定妆照与关键帧各 $0.0394。
+
+#### 这一家有五个坑，都写在适配器注释里了，这里再说一遍
 
 1. **图像生成不走兼容模式**。`/compatible-mode/v1/images/generations` 对
    所有出图模型都是 404，只能走原生异步任务接口
@@ -682,6 +687,24 @@ AI_DRAMA_VISION=dashscope     # 画面校验 qwen3-vl-plus（默认关，要显�
    要真正按秒生成就换 `wan2.5-i2v-preview`（这一家只有 `wan2.5-` / `wan2.6-` /
    `wan2.7-` 开头的模型认 `duration`，适配器按前缀判断，不认的**不发**这个参数，
    发了是提交即失败）。
+4. **口型同步不吃 data URL，得先传临时存储**。图片那边 base64 一塞就完，
+   VideoRetalk 要的是公网 http(s) 或 `oss://` 地址，所以多两步：
+   `GET /uploads?action=getPolicy&model=<模型名>` 拿凭证 → 把文件以
+   multipart 表单 POST 到返回的 `upload_host`，拿回 `oss://<key>`。
+   三个细节都是文档里一句话带过、踩了才知道的：**文件跟模型名绑定**
+   （name 对不上时报的是"文件不存在"）、`x-oss-forbid-overwrite` 开着
+   （重名会被拒，所以文件名带随机后缀）、凭证 300 秒就过期。
+   multipart 手写在 stdlib 里还有一颗雷：`Request.data` 的 setter 会把已有的
+   `Content-Length` **删掉**（CPython bpo-16464），所以长度必须在赋值之后再设，
+   否则无声退化成 chunked 传输，而 OSS 的表单上传不吃 chunked。
+   接上之后还有两件实跑才知道的事：竖屏 480P 是 **464x832，短边 464 不够接口
+   要的 640**，会自动放大上传、产物再缩回原尺寸；以及**产物会变冷色调** ——
+   它自己重编一遍码，同一件衣服同一个人，同步前后看着像换了个滤镜。
+5. **下载产物要绕开系统代理先直连**。这不是百炼的毛病，是 urllib 的：
+   Windows 上的代理设置会被 `getproxies()` **自动**读注册表读进来，而 curl
+   不读。于是出现过"同一个带签名的 OSS 直链，curl 秒下、urllib 稳定超时"，
+   看起来像收到了一条坏地址。适配器给下载准备了两个出口，**先直连、再退回
+   系统代理**（有些内网只有代理能出门，不能直接扔掉）。
 
 #### 一致性和景别，在这个接口上只能选一个
 
@@ -715,9 +738,9 @@ class MyVideo(VideoProvider):
 
 大约 30–60 行。**不用碰 pipeline、不用碰 stages、不用碰 store。**
 
-（这是**一种形态**的量。六种形态 + 异步任务轮询 + 时长裁切 + 错误码翻译，
-一共写了一千行左右 —— 见 `ai_drama/providers/dashscope.py`，
-`tests/test_dashscope.py` 里那 38 条用例全都**不联网**。）
+（这是**一种形态**的量。七种形态 + 异步任务轮询 + 临时存储上传 + 时长裁切 +
+错误码翻译，一共写了一千四百行左右 —— 见 `ai_drama/providers/dashscope.py`，
+`tests/test_dashscope.py` 里那 61 条用例全都**不联网**。）
 
 四个必须遵守的约定：
 - 错误统一抛 `ProviderError(msg, retryable=True/False)`。
@@ -789,9 +812,9 @@ python -m pytest
 ```
 
 （`pytest.ini` 里已经配好 `testpaths = tests`，在仓库根目录直接敲 `python -m pytest`
-就行。加 `-q` 会只剩进度点、看不到 `364 passed` 那行汇总。）
+就行。加 `-q` 会只剩进度点、看不到 `387 passed` 那行汇总。）
 
-覆盖范围（364 个用例）：
+覆盖范围（387 个用例）：
 
 | 文件 | 测什么 |
 |---|---|
@@ -819,7 +842,7 @@ python -m pytest
 | `test_job_ledger.py` | 提交后**开始轮询之前** job_id 已在库里、resume 只认领不重新提交（用 Ctrl-C 模拟进程被打断）、厂商报失败时记录被清掉、超时与失败被区分开、老库自动补列 |
 | `test_subtitles.py` | 剧本行去说话人与表演提示、SRT 时间戳进位、**ASS 的 PlayRes 就是画布尺寸**（字号才是像素）、`{}`/`\` 被转义、**像素级断言字幕真的烧进了画面**、关掉烧录仍留下可用的 SRT |
 | `test_web.py` | **读不出去**（白名单只有 `runs/` 与 `projects/`；`..`、绝对路径、盘符、数据库、`_work/` 一律 404，而"不存在"与"不许看"回同一个 404）、**不许自己编**（`None` 与 `exists=False` 是两回事、坏 json 不炸页面）、写方法一律 405、绑非回环要显式开关、**Range 请求**（成片能拖进度）、删掉一个产物页面上显示"文件没了"、**资产汇总的形状和页面读的那个形状是同一条断言** |
-| `test_dashscope.py` | 真厂商适配器的**纯函数层**（38 条，**一次网络调用都没有**）：一个名字注册六种形态、缺 key 当场报错且 `retryable=False`、`health()` 不联网、HTTP 码与厂商错误码各自映射到"该不该重试"、**只认三档出图尺寸**（传别的直接 InvalidParameter）、**不认 duration 的模型一个字节都不发这个参数**、音色映射（认不出就原样透传）、**视频按实际产出秒数计价**、裁切开关、`USE_PORTRAIT=0` 时确实退回文生图 |
+| `test_dashscope.py` | 真厂商适配器的**纯函数层**（61 条，**一次网络调用都没有**）：一个名字注册七种形态、缺 key 当场报错且 `retryable=False`、`health()` 不联网、HTTP 码与厂商错误码各自映射到"该不该重试"、**只认三档出图尺寸**（传别的直接 InvalidParameter）、**不认 duration 的模型一个字节都不发这个参数**、音色映射（认不出就原样透传）、**视频按实际产出秒数计价**、裁切开关、`USE_PORTRAIT=0` 时确实退回文生图、**下载先直连再退回系统代理**（并证明直连通了就不碰代理）、两次都失败时报的错里两条出口都在、`RemoteDisconnected` 被翻译成本模块的错、口型同步上传前把短边撑到 640 且**产物尺寸还原回去**、进度条产物落盘位置与"没有音轨"那条契约 |
 
 `tests/conftest.py` 里有 `need_ffmpeg` 夹具：没装 ffmpeg 时相关用例会跳过
 而不是失败 —— 环境缺失不该被误报成代码缺陷。
@@ -869,8 +892,9 @@ python -m pytest
       stdlib + 原生 JS、零构建。默认只绑回环，不提供任何写入口
       （见设计决定 19）
 - [x] **接一家真厂商**：`ai_drama/providers/dashscope.py`（阿里云百炼），
-      一个名字覆盖六种形态，只用 stdlib。异步任务轮询、时长裁切、
-      错误码到 `retryable` 的映射、按实际产出计费，见「已经接好的一家」
+      一个名字覆盖七种形态，只用 stdlib。异步任务轮询、临时存储上传、
+      时长裁切、错误码到 `retryable` 的映射、按实际产出计费、下载绕开
+      系统代理，见「已经接好的一家」
 - [x] **占位图喂给真模型要出声**：`t2i` 还是 dryrun、而 `image` 已经是真厂商时，
       真模型会把那张"写着提示词的分镜卡"当成底图去改，出来还是卡片。
       流水线现在会在开工前把这种配置组合**点名报出来**（见设计决定 3）

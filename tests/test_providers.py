@@ -18,10 +18,12 @@ from ai_drama.providers.base import (
     AudioProvider,
     BudgetExceeded,
     ImageProvider,
+    LipSyncProvider,
     ProviderError,
     T2IProvider,
     TextProvider,
     VideoProvider,
+    VisionProvider,
     call_with_retry,
 )
 
@@ -132,6 +134,8 @@ def test_all_registered_providers_satisfy_the_interfaces(monkeypatch):
         "video": VideoProvider,
         "audio": AudioProvider,
         "t2i": T2IProvider,
+        "vision": VisionProvider,
+        "lipsync": LipSyncProvider,
     }
     for kind, base in kinds.items():
         for name in registry.available()[kind]:
@@ -150,7 +154,7 @@ def test_providers_accept_every_keyword_their_callers_pass(monkeypatch):
     判据取 dryrun：它是默认实现，也是唯一被端到端跑通过的实现，
     调用方传什么都以它为准。
     """
-    for kind in ("text", "image", "video", "audio", "t2i", "vision"):
+    for kind in ("text", "image", "video", "audio", "t2i", "vision", "lipsync"):
         ours = _create_with_dummy_key(kind, "dashscope", monkeypatch)
         ref = registry.create(kind, "dryrun")
         for meth in _public_methods(ref):
