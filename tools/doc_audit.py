@@ -1,4 +1,4 @@
-"""审计：文档里提到的文件 / 子命令，代码里是不是真的有。
+"""审计：文档里提到的文件 / 子命令 / 图，代码和仓库里是不是真的有。
 
 这个检查是**固化下来的一次教训**。字幕功能从第一天起就写在 README 的
 依赖表、架构树和职责表里（"拼接 + 混音 + 字幕"），而代码里根本不存在 ——
@@ -50,6 +50,8 @@ _PATH_RE = re.compile(
     r"|`((?:web|static|docs|tests|tools|core|providers|stages)/[\w./-]+)`"
 )
 _CMD_RE = re.compile(r"python run\.py ([a-z][a-z-]*)")
+#: Markdown 图片：`![说明](路径)`。路径里有空格就截断了，但本仓库的图名都没空格。
+_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)")
 
 # 文档里短写文件名（`base.py`、`test_qc.py`）是刻意的，不必写全路径。
 # 所以匹配按"同名文件在仓库里存在"算数 —— 这仍然能抓住"整个功能都不存在"
@@ -99,11 +101,12 @@ def subcommands(root: Path) -> Set[str]:
 
 
 def broken_references(root: Path) -> Dict[str, Dict[str, List[str]]]:
-    """返回 {"paths": {缺失路径: [文档…]}, "commands": {未注册子命令: [文档…]}}。"""
+    """返回 {"paths": …, "commands": …, "images": …}，键是缺失的东西，值是哪几篇文档引的。"""
     files = _all_files(root)
     known = subcommands(root)
     bad_paths: Dict[str, List[str]] = {}
     bad_cmds: Dict[str, List[str]] = {}
+    bad_imgs: Dict[str, List[str]] = {}
 
     for doc in DOCS:
         p = root / doc
@@ -128,8 +131,16 @@ def broken_references(root: Path) -> Dict[str, Dict[str, List[str]]]:
             cmd = m.group(1)
             if cmd not in known:
                 bad_cmds.setdefault(cmd, []).append(doc)
+        # 图片链接：坏了不会报错，只会在主页上留一个空白框 —— 正是这个检查器
+        # 该管的那类"文档说谎"。外链（http/https）不查，那不在仓库里。
+        for m in _IMG_RE.finditer(text):
+            rel = m.group(1)
+            if rel.startswith(("http://", "https://", "data:")):
+                continue
+            if not (root / rel).exists():
+                bad_imgs.setdefault(rel, []).append(doc)
 
-    return {"paths": bad_paths, "commands": bad_cmds}
+    return {"paths": bad_paths, "commands": bad_cmds, "images": bad_imgs}
 
 
 #
@@ -186,6 +197,12 @@ def main() -> int:
         print(f"  {cmd:<20} <- {', '.join(sorted(set(docs)))}")
         bad = True
     print("  （无）" if not result["commands"] else "")
+
+    print("\n== 文档引用但不存在的图 ==")
+    for rel, docs in sorted(result["images"].items()):
+        print(f"  {rel:<45} <- {', '.join(sorted(set(docs)))}")
+        bad = True
+    print("  （无）" if not result["images"] else "")
 
     print("\n== 文档承诺但代码里找不到的能力 ==")
     unkept = unkept_promises(root)

@@ -61,6 +61,21 @@ def test_every_cli_command_the_docs_show_is_registered(audit):
     )
 
 
+def test_every_image_the_docs_show_exists(audit):
+    """文档引用的图得真的在仓库里。
+
+    坏掉的图片链接也是"文档说谎"，而且是**最不会报错的那种**：主页上留一个
+    空白框，谁都不会收到通知。README 是项目的门面，门面上破个洞比正文里
+    写错一句话更显眼。
+    """
+    root = _TOOL.parent.parent
+    bad = audit.broken_references(root)["images"]
+    assert not bad, (
+        "文档里引用了不存在的图："
+        + "；".join(f"{rel} <- {', '.join(d)}" for rel, d in sorted(bad.items()))
+    )
+
+
 def test_no_capability_is_promised_but_missing(audit):
     """比"文件在不在"更要紧的一层：能力有没有落地。
 
@@ -98,6 +113,11 @@ def test_the_audit_can_actually_fail(tmp_path):
     result = audit.broken_references(tmp_path)
     assert "ai_drama/core/nowhere.py" in result["paths"]
     assert "nonexistent" in result["commands"]
+
+    # 图片那一层也要能抓到：引一张不存在的图
+    (tmp_path / "README.md").write_text(
+        "![演示](docs/images/nowhere.png)", encoding="utf-8")
+    assert "docs/images/nowhere.png" in audit.broken_references(tmp_path)["images"]
 
     # 能力层也要能抓到：把"字幕烧录"从一个空仓库里承诺出来
     (tmp_path / "README.md").write_text("字幕会烧进画面。", encoding="utf-8")
