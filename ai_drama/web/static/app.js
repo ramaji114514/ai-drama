@@ -47,6 +47,32 @@ const mediaURL = (ref) => (ref && ref.exists ? esc(ref.url) : '');
 
 const state = { runs: [], projects: [], data: null, tab: 'storyboard', asset: null };
 
+/* ————————————————————————————————— 路由 ————————————————————————————————— */
+/* `#/run/<id>[/<tab>]` 或 `#/project/<id>`。
+ *
+ * 地址里带着状态有两个好处，都是实打实的：一条链接能指到某一条 run（"你看
+ * 第 2 集那个镜头"可以直接发出去），以及浏览器后退键能用。
+ *
+ * 还有第三个：**打开页面默认就进最新一条 run**。以前光是"左边挑一条 run"，
+ * 一屏黑底灰字，第一次打开的人只会觉得"什么都没显示"。
+ */
+function go(hash) {
+  if (location.hash === hash) route();
+  else location.hash = hash;
+}
+
+function route() {
+  const m = /^#\/(run|project)\/([^/]+)(?:\/(\w+))?/.exec(location.hash || '');
+  if (!m) return false;
+  const [, kind, id, tab] = m;
+  if (kind === 'project') { openProject(id); return true; }
+  state.tab = tab || 'storyboard';
+  openRun(id);
+  return true;
+}
+
+window.addEventListener('hashchange', route);
+
 /* ————————————————————————————————— 侧栏 ————————————————————————————————— */
 
 async function boot() {
@@ -62,7 +88,9 @@ async function boot() {
   state.projects = await getJSON('/api/projects');
   renderRuns();
   renderProjects();
+  if (!route() && state.runs.length) go('#/run/' + state.runs[0].run_id);
 }
+
 
 function renderRuns() {
   $('#runcount').textContent = state.runs.length ? `(${state.runs.length})` : '';
@@ -80,7 +108,7 @@ function renderRuns() {
     </li>`;
   }).join('');
   $('#runs').querySelectorAll('li[data-run]').forEach((li) => {
-    li.onclick = () => openRun(li.dataset.run);
+    li.onclick = () => go('#/run/' + li.dataset.run);
   });
 }
 
@@ -102,7 +130,7 @@ function renderProjects() {
     </li>`;
   }).join('');
   $('#projects').querySelectorAll('li[data-proj]').forEach((li) => {
-    li.onclick = () => openProject(li.dataset.proj);
+    li.onclick = () => go('#/project/' + li.dataset.proj);
   });
 }
 
@@ -198,7 +226,10 @@ function renderRun() {
        ${n ? `<span class="n">${esc(n)}</span>` : ''}</button>`).join('')}</div>
     <div id="tab"></div>`;
   $('#content').querySelectorAll('.tabs button').forEach((b) => {
-    b.onclick = () => { state.tab = b.dataset.tab; renderRun(); };
+    b.onclick = () => {
+      state.tab = b.dataset.tab;
+      go('#/run/' + state.data.run.run_id + '/' + state.tab);
+    };
   });
   renderTab();
 }

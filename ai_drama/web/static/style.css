@@ -4,6 +4,11 @@
   --ok:#3fb950; --bad:#f85149; --warn:#d29922; --idle:#6e7681;
 }
 *{box-sizing:border-box}
+/* `hidden` 属性在 UA 样式表里只是一条 `display:none`，**任何**写了 display 的
+   规则都能盖过它。`#lightbox` 就是 `display:flex`，于是那块 rgba(0,0,0,.88)
+   的遮罩从打开页面起就一直盖在整个界面上 —— 页面"看不见"的真正原因不是配色，
+   是这层从未被隐藏的灯箱。这条 !important 是给整个界面的兜底。 */
+[hidden]{display:none !important}
 html,body{margin:0;height:100%}
 body{
   background:var(--bg); color:var(--fg); font:14px/1.55 -apple-system,

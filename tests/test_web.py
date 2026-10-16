@@ -186,6 +186,27 @@ def test_meta_marks_the_kinds_that_are_off_by_default(workspace: Path):
 # ————————————————————————————————————————----
 
 
+def test_the_overlay_cannot_survive_the_hidden_attribute(workspace: Path):
+    """这条是**用户报的**："网页打开是一片空白 / 全黑，什么都没有"。
+
+    原因不是配色，是一条级联：`hidden` 在 UA 样式表里只是一条 `display:none`，
+    而 `#lightbox{display:flex}` 的选择器优先级更高，把它盖掉了 —— 于是那块
+    `rgba(0,0,0,.88)` 的灯箱遮罩从打开页面起就一直盖在整个界面上，
+    所有东西都只剩 12% 亮度。headless 截图里我一直以为"这个深色主题就是偏暗"。
+
+    CSS 的级联没法从 Python 里跑，所以这里钉的是**契约**：`[hidden]` 必须被
+    一条 `!important` 兜住，而且那个灯箱必须真的用了 `hidden`。
+    """
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert "[hidden]" in css, "没有兜底的 [hidden]{display:none !important}"
+    rule = css.split("[hidden]", 1)[1].split("}", 1)[0]
+    assert "display:none" in rule.replace(" ", "") and "!important" in rule
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="lightbox"' in page and "hidden" in page
+    # 灯箱是全屏遮罩，靠 hidden 属性开关 —— 它一旦常驻，整页就"看不见"了
+    assert "#lightbox{" in css.replace(" ", "")
+
+
 def test_the_page_and_its_static_files_are_served(workspace: Path):
     with serving(workspace) as (base, _app):
         status, body, headers = _get(base + "/")
