@@ -67,11 +67,22 @@ def _seed_for(shot: Shot, part: int, total: int) -> int:
 
 
 def _submit_one(ctx: StageContext, shot: Shot, part: int, total: int,
-                duration: float, dest: Path) -> str:
-    src_image = shot.keyframe
-    if not src_image or not Path(src_image).exists():
-        kf = paths.keyframe(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
-        src_image = str(kf) if kf.exists() else None
+                duration: float, dest: Path,
+                chain_from: Optional[Path] = None) -> str:
+    """提交一段。
+
+    ``chain_from`` 是上一段的**尾帧**：给了就用它当首帧，而不是回到整个
+    镜头的关键帧。这是"模型一次只给 5 秒、但这场戏要 15 秒"时唯一不穿帮的
+    接法 —— 每段都从上一个 5 秒结束的地方接着往下演。
+
+    不给（第一段，或者抽帧失败）时退回镜头关键帧，行为与以前一致。
+    """
+    src_image = str(chain_from) if chain_from and chain_from.exists() else None
+    if src_image is None:
+        src_image = shot.keyframe
+        if not src_image or not Path(src_image).exists():
+            kf = paths.keyframe(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
+            src_image = str(kf) if kf.exists() else None
 
     caps = caps_of(ctx.bundle.video)
     request: Dict[str, Any] = {
@@ -166,6 +177,28 @@ def _move_into_place(src: Path, dest: Path) -> None:
         tmp.replace(dest)
 
 
+def _chain_frame(ctx: StageContext, shot: Shot, idx: int) -> Optional[Path]:
+    """第 idx 段的首帧 = 上一段的尾帧。第一段（或抽帧失败）返回 None。
+
+    抽帧失败**不报错**，只是退回镜头关键帧 —— 那会穿帮，但比整镜失败好，
+    而且失败原因会被 provider 的 usage 记下来。
+    """
+    if idx <= 1:
+        return None
+    prev = paths.clip_part(ctx.root, ctx.run.run_id, shot.scene_id, shot.order, idx - 1)
+    if not prev.exists() or prev.stat().st_size == 0:
+        return None
+    try:
+        work = paths.work_dir(ctx.root, ctx.run.run_id)
+    except Exception:                                 # noqa: BLE001
+        work = prev.parent
+    out = work / f"chain_{shot.scene_id}_{shot.order}_{idx}.png"
+    try:
+        return media.last_frame(prev, out)
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
 def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
     """渲一个镜头（必要时拆成多段）。返回 (状态, usage, 说明)。"""
     dest = paths.clip(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
@@ -218,7 +251,8 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
             ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
 
         try:
-            job_id = _submit_one(ctx, shot, idx, total, duration, part_path)
+            job_id = _submit_one(ctx, shot, idx, total, duration, part_path,
+                                 chain_from=_chain_frame(ctx, shot, idx))
         except Exception as exc:                      # noqa: BLE001
             _cleanup_parts(ctx, shot)
             ctx.heal_shot(shot, exc)

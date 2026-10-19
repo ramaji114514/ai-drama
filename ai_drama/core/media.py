@@ -172,6 +172,27 @@ def image_to_clip(image: Path, out: Path, *, duration: float, fps: int = 24,
     return out
 
 
+def last_frame(video: Path, out: Path) -> Path:
+    """抽出视频的**最后一帧**，用来续拍下一段。
+
+    为什么是"最后一帧"而不是"平均一帧"：续拍要的是**动作接得上**，
+    也就是第二段的第一帧必须长成第一段的最后一帧的样子。
+
+    ``-sseof -0.4`` 是从结尾往前数 0.4 秒再取帧 —— 直接 seek 到最后一帧
+    在关键帧稀疏的视频上会取不到。取 0.4 秒是因为再往前挪就可能落到
+    倒数第二帧之前，动作接缝会明显。
+    """
+    ff = require_ffmpeg()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run([
+        ff, "-y", "-v", "error", "-sseof", "-0.4", "-i", str(video),
+        "-frames:v", "1", "-update", "1", str(out),
+    ])
+    if not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError(f"抽不出最后一帧：{video}")
+    return out
+
+
 def concat_clips(clips: List[Path], out: Path, *, work_dir: Optional[Path] = None) -> Path:
     """无损拼接（先统一转成 ts 再 concat，避免分辨率不一致时炸掉）。"""
     ff = require_ffmpeg()
