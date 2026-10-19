@@ -126,18 +126,24 @@ def test_zero_duration_yields_no_parts():
 
 
 def test_estimate_is_not_clamped_by_the_model_cap():
-    """estimate_shot_seconds 的 8 秒是**创作侧**上限，不是模型能力上限。
+    """estimate_shot_seconds 的默认片长是**创作侧**的量，不是模型能力上限。
 
     如果这两件事被混在一个数字里，你就再也分不清"这场戏该拍多久"
     和"这个模型能生成多久" —— 换一家模型会莫名其妙改变你的节奏。
+
+    [!] 这条用例的语义在"默认 15 秒"那次改动里变过：
+    以前 8 秒是**上限**（再长的台词也被夹到 8 秒），现在是**下限**
+    （再短的镜头也至少 15 秒，而长台词可以超过 15 秒 —— 把一句 40 秒
+    的话剪成 15 秒等于把话说一半）。所以这里断言的是"台词说了算"，
+    以及"要不要拆"仍然只由 provider 的上限决定。
     """
     long_speech = "你" * 200
     d = estimate_shot_seconds(_shot(dialogue=long_speech))
-    assert d == 8.0                       # 创作侧的上限生效
-    # 而"要不要拆"由 provider 说了算，与上面那个 8 无关：
-    # 8 秒 / 3 秒上限 = 3 段均分，不是 4 段 —— 少切一刀就是少一次生成、少一笔钱
+    assert d > 40.0, "40 秒的台词不该被默认片长剪断"
+    # 而"要不要拆"由 provider 说了算，与上面那个数字无关：
+    # 每段都不超过 3 秒，且总和一分不丢。
     parts = plan_shot_split(d, max_duration=3.0)
-    assert len(parts) == 3
+    assert all(p <= 3.0 + 1e-6 for p in parts)
     assert abs(sum(parts) - d) < 1e-6
 
 

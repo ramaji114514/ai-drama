@@ -347,8 +347,33 @@ FRAMING_PACE = {
 }
 
 
+DEFAULT_SHOT_SECONDS = 15.0
+
+
+def default_shot_seconds() -> float:
+    """这个项目默认一个镜头拍几秒。
+
+    **这是创作参数，不是模型能力。** 模型能出多久由 provider 的
+    ProviderCaps 声明，两者刻意分开：把默认值写死在 provider 那边，
+    等于让"我换了个模型"偷偷改掉"这场戏该怎么剪"。
+
+    默认 15 秒是有代价的：15 秒里塞一句 0.8 秒的台词，剩下 14 秒全是
+    没有声音的画面。所以台词真的短的时候，得靠 stage02 的景别与动作把它
+    填满 —— 或者把这个值调小。
+    """
+    raw = (os.environ.get("AI_DRAMA_SHOT_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_SHOT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_SHOT_SECONDS
+    return value if value > 0 else DEFAULT_SHOT_SECONDS
+
+
 def estimate_shot_seconds(shot: Shot, *, cps: float = 4.5, min_s: float = 2.0,
-                          max_s: float = 8.0) -> float:
+                          max_s: float = 8.0,
+                          preferred_s: Optional[float] = None) -> float:
     """按台词长度和景别推算镜头时长。
 
     这是短剧节奏的量化模型：台词决定下限（人说话要时间），景别决定基础节奏。
@@ -359,11 +384,20 @@ def estimate_shot_seconds(shot: Shot, *, cps: float = 4.5, min_s: float = 2.0,
     不是生成模型的能力上限。后者由 provider 的 ProviderCaps 声明，
     两者的差距由 split_shot_seconds() 负责弥合 —— 不要在这里夹到模型上限，
     否则你等于让"模型能生成多久"偷偷决定了"这场戏该拍多久"。
+
+    ``preferred_s`` 是**默认片长**（见 default_shot_seconds）：它抬的是下限
+    而不是上限 —— 台词比它还长时，镜头仍然跟着台词长。这样"默认 15 秒"
+    和"时长跟着台词走"不是互相打架的两条规则，而是同一个 max() 的两项。
     """
+    if preferred_s is None:
+        preferred_s = default_shot_seconds()
     base = FRAMING_PACE.get(shot.framing, 3.0)
     speech = len(shot.dialogue.strip()) / cps if shot.dialogue.strip() else 0.0
-    need = max(base, speech + 0.4)
-    return round(max(min_s, min(max_s, need)), 2)
+    need = max(base, speech + 0.4, preferred_s)
+    # 台词是**硬下限**：max_s 只约束"没台词时最多松到多久"，
+    # 不能让一句 30 秒的话被剪成 15 秒 —— 那等于把话说一半。
+    ceiling = max(max_s, preferred_s, speech + 0.4)
+    return round(max(min_s, min(ceiling, need)), 2)
 
 
 def plan_shot_split(duration: float, *, max_duration: Optional[float],

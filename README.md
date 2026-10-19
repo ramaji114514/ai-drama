@@ -763,6 +763,30 @@ AI_DRAMA_VISION=dashscope     # 画面校验 qwen3-vl-plus（默认关，要显�
 口型同步是唯一**按美元标价**的（`$0.011469/秒`），所以它的变量名是
 `AI_DRAMA_DASHSCOPE_PRICE_USD_LIPSYNC`。
 
+### 第二家：aihubmix（Seedance）—— 为了单段时长
+
+百炼的 wanx 系列一次最多出 **5 秒**。一个 15 秒的镜头会被拆成 3 段，
+而这 3 段是**各自从同一张关键帧起跑**的（`stage04_video._submit_one`），
+拼起来会看到画面跳回去 —— 同一个动作演三遍。
+
+`doubao-seedance-2-5-260628` 一次能出 **30 秒**，所以 15 秒是**一条**连续的片子。
+它还能收首尾帧（`first_frame` / `last_frame`）和最多 30 个参考素材，
+这两个能力目前还没用上，是后面做长镜头和更强一致性的口子。
+
+```bash
+# .env
+AI_DRAMA_AIHUBMIX_API_KEY=sk-...
+AI_DRAMA_VIDEO=aihubmix       # 只换视频这一种，其它照旧用百炼
+```
+
+**第一次用必须先去 <https://console.aihubmix.com/async-tasks> 打开异步任务。**
+不开的话提交会 403 `async_not_enabled` —— 这个错误长得像"key 不对"，
+实测浪费了一轮排查。
+
+它按 video token 计费、没有公开的每秒单价，所以 `AI_DRAMA_AIHUBMIX_USD_PER_SECOND`
+不填时成本表记 0 并注明"未配每秒单价"，**而不是编一个数**让预算闸门失准。
+它默认会生成音轨，适配器里已显式关掉（否则台词和 BGM 会叠两层）。
+
 实测跑一集（1 场 2 镜，竖屏，`python run.py cost` 的输出）：
 
 | 阶段 | 模型 | 单价 | 这一集 |

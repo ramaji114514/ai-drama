@@ -4,6 +4,7 @@
 """
 
 from . import base, registry  # noqa: F401
+from . import aihubmix  # noqa: F401  导入即注册（装饰器生效）
 from . import dashscope  # noqa: F401  导入即注册（装饰器生效）
 from .base import (  # noqa: F401
     AudioProvider,

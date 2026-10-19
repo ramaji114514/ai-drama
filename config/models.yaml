@@ -90,6 +90,21 @@ models:
     strengths: 同上，但单段上限压到 4 秒。
     notes: 用来验证"超长镜头被自动拆段"这条路径 —— 不用花钱就能试。
 
+  # 真的接过、真跑过的第一条视频模型。id 是从服务商的 /models 目录里
+  # 抄下来的，不是猜的 —— 猜的名字实测会 401/404，而且报错长得像 key 错了。
+  seedance-2-5-260628:
+    kind: video
+    provider: aihubmix
+    tier: quality
+    cost: 3
+    max_duration: 30
+    resolutions: [480p, 720p, 1080p]
+    aspect_ratios: [9:16, 16:9, 1:1, 4:3, 3:4, 21:9]
+    supports_image_input: true
+    strengths: 一次能出 30 秒。15 秒的镜头是**一条**连续的片子，不用拆段再拼。
+    notes: 走 aihubmix 聚合接口，按 video token 计费、没有公开的每秒单价，所以 AI_DRAMA_AIHUBMIX_USD_PER_SECOND 不填时成本记 0 并注明，而不是编一个数让预算闸门失准。它默认会生成音轨，适配器里已关掉。
+
+
   # 下面几条是留给你接真厂商时抄的样板。id 与字段名都是真实存在的形态，
   # 但**上线前请照你所用服务的 /models 接口核对一遍**：
   # 凭文档和命名惯例猜出来的 id，错一半是常态。
