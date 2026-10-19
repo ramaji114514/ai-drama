@@ -407,6 +407,15 @@ def run(ctx: StageContext) -> StageReport:
             f"[!] {crowded} 个镜头出镜人数超过参考图上限（{max_refs}），"
             "多出来的人锁不住脸 —— 拆成单人镜头，或换支持更多参考图的模型"
         )
+    # 尾帧退化成首帧的复述时必须说出来。不说的话，用户拿去做首尾帧工具，
+    # 两端会是同一个画面 —— 那不是"效果差一点"，是这一镜根本没动。
+    no_end = sum(1 for s in ep.shots if not (s.end_action or "").strip())
+    if no_end:
+        report.notes.append(
+            f"[!] 尾帧：{no_end}/{len(ep.shots)} 镜没有 end_action（模型没写这个字段），"
+            "尾帧只能退化成这一镜起始画面的复述 —— 首尾两帧会是同一个画面，"
+            "等于没有尾帧。重跑 script 阶段可以让模型补上"
+        )
     ctx.log(f"[storyboard] [OK] {head}")
     ctx.log(f"[storyboard] {lock}")
     for note in report.notes:
