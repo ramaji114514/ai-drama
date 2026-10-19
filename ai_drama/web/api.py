@@ -202,12 +202,14 @@ def _shot_payload(root: Path, run_id: str, scene_id: str, shot: Any,
         "framing": getattr(shot, "framing", ""),
         "action": getattr(shot, "action", ""),
         "dialogue": getattr(shot, "dialogue", ""),
-        # 提示词也带出去：用户要拿去可灵/即梦这类网页端用，所以在页面上能看、
-        # 能改（`--allow-edit` 时）。video_prompt 是运镜+动作，image_prompt 是
-        # 首帧画面。**没有"尾帧"这个字段** —— 分镜阶段就没让人写它，编一个出来
-        # 只会让用户以为它能用。
+        # 提示词也带出去：用户要拿去可灵/即梦这类网页端用，所以在页面上要能看、
+        # 能改、能一键复制。image_prompt 是首帧，last_frame 是尾帧，video_prompt
+        # 是运镜+动作。end_action 单独带出去，因为它是模型的原始意图，
+        # last_frame 是骨架拼出来的结果 —— 两者都摆出来，用户才看得出哪一步变了。
         "image_prompt": getattr(shot, "image_prompt", ""),
+        "last_frame": getattr(shot, "last_frame", ""),
         "video_prompt": getattr(shot, "video_prompt", ""),
+        "end_action": getattr(shot, "end_action", ""),
         "duration": float(getattr(shot, "duration", 0.0) or 0.0),
         "characters": list(getattr(shot, "characters", None) or []),
         "declared": getattr(shot, "characters", None) is not None,

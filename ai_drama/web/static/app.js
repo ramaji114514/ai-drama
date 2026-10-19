@@ -274,6 +274,35 @@ function tabStoryboard(d) {
      <code>episode.json</code>（可以手改，改完 <code>resume --stages frames</code>）。</p>`;
 }
 
+function promptBox(sh) {
+  const fields = [
+    ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
+    ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
+    ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
+  ].filter(([, v]) => v);
+  if (!fields.length) return '';
+  const inner = fields.map(([name, value, hint], i) => `
+    <div class="pf">
+      <div class="pfhead"><b>${name}</b><span class="dim">${esc(hint)}</span>
+        <button class="cp" onclick="copyField(this)">复制</button></div>
+      <textarea class="pftext" rows="${Math.min(8, Math.max(3,
+        Math.ceil((value || '').length / 46)))}">${esc(value)}</textarea>
+    </div>`).join('');
+  return `<details class="prompts"><summary>提示词（${fields.length} 段，可直接改、可一键复制）</summary>${inner}</details>`;
+}
+
+function copyField(btn) {
+  const ta = btn.closest('.pf').querySelector('textarea');
+  const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(ta.value).then(done, () => { ta.select(); document.execCommand('copy'); done(); });
+  } else {
+    ta.select();
+    document.execCommand('copy');
+    done();
+  }
+}
+
 function shotCard(sh) {
   const thumb = sh.keyframe && sh.keyframe.exists
     ? `<img src="${mediaURL(sh.keyframe)}" alt="${esc(sh.label)}">`
@@ -289,7 +318,9 @@ function shotCard(sh) {
       <div class="row"><span class="dim">${esc(sh.framing || '')}</span>
         <span class="dim">${fmtSec(sh.duration)}</span></div>
       ${sh.action ? `<p class="act">${esc(sh.action)}</p>` : ''}
+      ${sh.end_action ? `<p class="act dim">结束画面：${esc(sh.end_action)}</p>` : ''}
       ${sh.dialogue ? `<p class="dlg">${esc(sh.dialogue)}</p>` : ''}
+      ${promptBox(sh)}
       ${sfx ? `<div class="sfx">音效：${sfx}</div>` : ''}
       ${sh.characters && sh.characters.length
         ? `<div class="sfx">出镜：${esc(sh.characters.join('、'))}</div>`
