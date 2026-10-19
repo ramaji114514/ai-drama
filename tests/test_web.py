@@ -326,6 +326,12 @@ def test_a_run_exposes_its_storyboard_and_the_files_behind_it(
     assert sb["shots_total"] == sum(len(s["shots"]) for s in sb["scenes"]) > 0
     assert sb["scenes"][0]["shots"]
     shot = sb["scenes"][0]["shots"][0]
+    # 提示词要带出来 —— 页面上那几个可复制的文本框读的就是这几个字段，
+    # 少一个，用户就看到一个空框（或者根本看不到那一栏）。
+    for key in ("image_prompt", "last_frame", "video_prompt", "end_action"):
+        assert key in shot, f"分镜没把 {key} 带出去"
+    assert shot["image_prompt"], "关键帧都渲好了，首帧提示词不该是空的"
+    assert shot["last_frame"], "尾帧至少会退化成 action，不该是空字符串"
     assert shot["keyframe"]["exists"] is True
     # 路径是 quote 过的（文件名里可能有空格与汉字），所以这里不能写死 runs/
     assert shot["keyframe"]["url"].startswith("/media?path=")
@@ -398,6 +404,26 @@ def test_the_asset_summary_has_the_shape_the_page_reads(
     assert summary["by_kind"]["keyframe"]["count"] >= 1
     page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert "v.count" in page, "页面不再读 .count 了 —— 那几张卡片会印出 [object Object]"
+
+
+def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
+    """提示词是用 textarea 摆出来的，不是一段 <pre>。
+
+    为什么在乎这个：用户要把提示词复制到别的视频工具里去。`<pre>` 双击选不干净、
+    也改不了；textarea 能一键全选、能改、能读回 value。这条用例钉的是"别哪天
+    被谁顺手改回成 div"。
+    """
+    page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "function promptBox" in page
+    assert 'class="pftext"' in page, "提示词不再用 textarea 渲染了"
+    assert 'onclick="copyField(this)"' in page, "复制按钮不见了"
+    # 剪贴板 API 在非 https 的局域网地址上会失败，必须留着 execCommand 的退路
+    assert "navigator.clipboard" in page and "execCommand" in page
+    # 空字段不该摆一个空框出来假装有内容
+    assert ".filter(([, v]) => v)" in page
+
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert ".pftext" in css and ".cp" in css, "样式没跟上，框会贴在边上"
 
 
 @pytest.mark.ffmpeg
