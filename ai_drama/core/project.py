@@ -48,7 +48,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import paths
+from . import paths, voice
 from .cast import ensure_ids, id_table, mint_id, resolve
 from .models import Character, new_id, now_iso
 
@@ -67,6 +67,10 @@ class Project:
     #: 角色 -> TTS 音色。键可以是 `char_id`（首选）、名字或别名。
     #: 同一个人每集必须用同一个声音，否则比脸漂还明显。
     voice_map: Dict[str, str] = field(default_factory=dict)
+    #: 角色 -> 这个音色是**凭什么**定下来的（"男声（凭「42岁」判为adult）"）。
+    #: 只记自动推断出来的那些；人手填的 `voice_map` 不写，因为人不需要向自己解释。
+    #: 留在文件里是为了让"声音不对"这件事有个可以查、可以改的地方。
+    voice_notes: Dict[str, str] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -98,6 +102,45 @@ class Project:
         if isinstance(who, str):
             return self.voice_map.get(who, fallback) or fallback
         return fallback
+
+    def ensure_voices(
+        self, chars: List[Character]
+    ) -> Tuple[List[Tuple[str, str, str]], List[Tuple[str, str]]]:
+        """给圣经里还没定音色的角色补一个，并且**记下凭什么**。
+
+        为什么要有这一步：`voice_map` 一直是空的，`voice_for()` 于是对所有人
+        回落到同一个全局默认音色 —— 一部剧里苍老的男人和十七岁的少年会用
+        同一个嗓子，而且**没有任何一层会报出来**。填一次就永久生效，因为
+        音色和定妆照一样是跨集属性。
+
+        只补不覆盖：人手写进 `voice_map` 的值（包括故意写错的）一律不动。
+        定不出音色的也**不硬塞默认值** —— 返回在第二个返回值里，由调用方
+        报出来，人看到了才知道该手填哪一条。
+
+        返回 `([(名字, 音色, 依据)], [(名字, 为什么定不了)])`。
+        """
+        filled: List[Tuple[str, str, str]] = []
+        unresolved: List[Tuple[str, str]] = []
+        for c in chars:
+            key = c.char_id or c.name
+            if not key:
+                continue
+            # 已有音色（不管按 id、名字还是别名存的）就跳过
+            if self.voice_for(c, fallback=""):
+                continue
+            guess = voice.suggest(c.desc or "", c.anchor_prompt or "")
+            if guess is None:
+                unresolved.append(
+                    (
+                        c.name,
+                        voice.unresolved_reason(c.desc or "", c.anchor_prompt or ""),
+                    )
+                )
+                continue
+            self.voice_map[key] = guess.voice
+            self.voice_notes[key] = guess.why
+            filled.append((c.name, guess.voice, guess.why))
+        return filled, unresolved
 
     def scripture_block(self) -> str:
         """给分镜阶段看的"角色圣经"片段。
@@ -249,6 +292,7 @@ class Project:
             "style": self.style,
             "characters": [c.to_dict() for c in self.characters],
             "voice_map": dict(self.voice_map),
+            "voice_notes": dict(self.voice_notes),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -262,6 +306,7 @@ class Project:
             style=d.get("style", ""),
             characters=[Character.from_dict(c) for c in d.get("characters", []) or []],
             voice_map=dict(d.get("voice_map") or {}),
+            voice_notes=dict(d.get("voice_notes") or {}),
             created_at=d.get("created_at") or now_iso(),
             updated_at=d.get("updated_at") or now_iso(),
         )

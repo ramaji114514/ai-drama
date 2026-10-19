@@ -166,6 +166,11 @@ PROMISES = (
     # 那就得真有那个白名单
     ("只读查看器", r"def make_server|只读"),
     ("目录白名单", r"def safe_media_path|MEDIA_PREFIXES"),
+    # 音色：文档说"按角色描述自动定音色、理由落进 voice_notes"，
+    # 那就得真有那个推断函数和那张表
+    ("音色推断", r"def suggest|voice_notes"),
+    # 文档说"改完 episode.json 用 --from-json 读回库"，那就得真有这条路
+    ("从 json 回灌", r"def import_episode_json"),
 )
 
 

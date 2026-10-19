@@ -86,6 +86,10 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
   画面提示词只描述看得见的东西。把"音效"写进画面提示词会让模型去**画**一个
   音箱或一行字 —— 质检会判 block。
 - 台词统一放 `dialogue` 字段，它会被送进 TTS，不会进画面模型。
+  **有人说话就必须写成「说话人：台词」**（例：`苏蔓：（低声）不对。`）。
+  配音要按说话人挑嗓子，没有前缀就只能全片一个声音 —— 一个苍老的男人
+  用稚气的女声，观众一耳朵就出戏。画外音也要写清是谁。
+  一句台词不要超过 20 个字：竖屏短剧一句话一口气说完。
 - `sfx` 放**环境声与动作声**：雨声、门被撞开、玻璃碎、心跳、脚步。
   写具体的、能听见的声音，一条 2-8 个字（"夜雨落在铁皮棚上"、"门被撞开"）。
   **不要写音乐**（BGM 是全片一条，走单独的字段），也不要写台词里已经有的东西。
@@ -151,6 +155,10 @@ def run(ctx: StageContext) -> StageReport:
     if ctx.project is not None:
         cast, stats = ctx.project.merge_cast(ep.characters)
         ep.characters = cast
+        # 音色和外观一样是跨集属性：给还没定音色的角色补一个，免得整部剧
+        # 所有人共用同一个默认嗓子（见 core/voice.py）。
+        # **必须放在 save_project() 之前** —— 晚于落盘就等于没写进去。
+        filled, unresolved = ctx.project.ensure_voices(ep.characters)
         # 新登场的角色立刻入册，下一集它就变成在册角色。
         # 定妆照要等 stage02 生成，那时再 remember_portrait()。
         ctx.save_project()
@@ -161,6 +169,15 @@ def run(ctx: StageContext) -> StageReport:
             # 换了叫法：身份没变（id 还认得出），名字记成了别名
             line += f"，记下 {stats['renamed']} 个新叫法"
         report.notes.append(line)
+        if filled:
+            used = "、".join(f"{name}→{v}" for name, v, _ in filled)
+            report.notes.append(f"音色：按角色描述定了 {len(filled)} 个（{used}）")
+        for name, why in unresolved:
+            report.notes.append(
+                f"音色：[!] {name} {why}，这一集它会用全局默认音色"
+                f"（{ctx.run.meta.get('voice') or 'female_01'}）—— 在 "
+                f"projects/{ctx.project.project_id}/project.json 的 voice_map 里手填一个"
+            )
     # 单集模式（没有 project）也要发 id：这样同一集里"同名不同人"能被发现，
     # 而不是等到了第 5 集才有人发现两张脸是同一个人。id 在这里是集内稳定的。
     minted = castlib.ensure_ids(ep.characters)

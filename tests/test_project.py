@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from ai_drama.core import paths, project
+from ai_drama.core import paths, project, voice
 from ai_drama.core.models import Character
 from ai_drama.core.pipeline import Pipeline
 from ai_drama.core.store import Store
@@ -271,15 +271,23 @@ class _RecordingAudio(DryRunAudioProvider):
     def __init__(self) -> None:
         super().__init__()
         self.voices: List[str] = []
+        self.texts: List[str] = []
 
     def tts(self, text: str, dest: Path, **kw: Any):
         self.voices.append(str(kw.get("voice")))
+        self.texts.append(text)
         return super().tts(text, dest, **kw)
 
 
 @pytest.mark.ffmpeg
 def test_each_character_keeps_their_own_voice(workspace: Path, need_ffmpeg: None):
-    """声音比脸更容易被记住 —— 第 3 集换了音色会被直接说成"配音换人了"。"""
+    """声音比脸更容易被记住 —— 第 3 集换了音色会被直接说成"配音换人了"。
+
+    这里同时钉住两件事：
+    * 人手写进 `voice_map` 的音色（苏蔓 = female_02）不被自动推断改掉；
+    * 圣经里没写的角色**不会再吃全剧默认的那个嗓子**（用户报过：苍老的男人
+      用稚气的女声）。它会被按描述补一个，并留下"凭什么"的笔记。
+    """
     proj = project.new_project("深夜外卖")
     proj.characters.append(Character(name="苏蔓", desc="女，31岁"))
     proj.voice_map["苏蔓"] = "female_02"
@@ -291,15 +299,94 @@ def test_each_character_keeps_their_own_voice(workspace: Path, need_ffmpeg: None
     pipe.run(run, stages=["script", "audio"])
 
     ep = store.get_episode(run.run_id)
-    expect = []
-    for shot in ep.shots:
-        if not shot.dialogue.strip():
-            continue
-        speaker = shot.dialogue.split("：")[0].strip()
-        expect.append("female_02" if speaker == "苏蔓" else "female_01")
-    assert audio.voices == expect or sorted(audio.voices) == sorted(expect), (
-        f"音色没按角色走：{audio.voices}"
+    speakers = {
+        shot.dialogue.split("：")[0].strip()
+        for shot in ep.shots
+        if shot.dialogue.strip()
+    }
+    reloaded = project.load(workspace, proj.project_id)
+    assert reloaded is not None
+
+    # 1) 人手写的没被动
+    assert reloaded.voice_for("苏蔓") == "female_02"
+    # 2) 其它角色都定了音色，没有人再落到全局默认的 female_01 上
+    for name in speakers - {"苏蔓"}:
+        got = reloaded.voice_for(name)
+        assert got, f"{name} 没定音色 —— 它又会用全局默认嗓子"
+        assert got != "female_01", f"{name} 又吃到了全剧默认音色"
+        # 3) 是男是女得跟描述对上（dryrun 剧本里的这类角色是男的）
+        assert voice.PALETTE[got][0] == "male", f"{name} 拿到了 {got}"
+        # 4) "凭什么"留在文件里
+        canon = reloaded.character_by_ref(name)
+        key = (canon.char_id if canon else "") or name
+        assert key in reloaded.voice_notes
+
+    expect = [reloaded.voice_for(s) for s in
+              (shot.dialogue.split("：")[0].strip() for shot in ep.shots
+               if shot.dialogue.strip())]
+    assert sorted(audio.voices) == sorted(expect), (
+        f"音色没按角色走：{audio.voices} != {expect}"
     )
+
+
+@pytest.mark.ffmpeg
+def test_the_voice_speaks_the_line_not_the_script(workspace: Path, need_ffmpeg: None):
+    """字幕要带说话人和舞台提示，配音**不能**。
+
+    修之前是把整条 `苏蔓：（低声）不对。` 原样丢给 TTS —— 观众会听见有人念
+    出"苏蔓"和"低声"两个字。这是用户听出来的，不是测试发现的，所以补上。
+    """
+    from ai_drama.core import media
+
+    proj = project.new_project("配音不带台本")
+    proj.save(workspace)
+
+    audio = _RecordingAudio()
+    pipe, store = _pipe(workspace, proj.project_id, audio=audio)
+    run = pipe.start("第1集", scenes=1, shots_per_scene=3)
+    pipe.run(run, stages=["script", "audio"])
+
+    ep = store.get_episode(run.run_id)
+    want = [media.speech_text(s.dialogue) for s in ep.shots if s.dialogue.strip()]
+    assert audio.texts, "一句都没配"
+    assert audio.texts == want
+    for heard in audio.texts:
+        assert "：" not in heard and ":" not in heard, f"把说话人也念出来了：{heard}"
+        assert "（" not in heard and "(" not in heard, f"把舞台提示也念出来了：{heard}"
+
+
+def test_from_json_brings_the_edited_file_back_into_the_database(workspace: Path):
+    """`episode.json` 一直是只写不读的产物。
+
+    于是"觉得第 3 个镜头台词不对，直接改 episode.json 再只重跑受影响阶段"
+    这句一直是空头承诺 —— 改完 resume，库里还是旧的那份，重跑出来的成片
+    一个字都没变。`resume --from-json` 把它补上。
+    """
+    from ai_drama.cli import import_episode_json
+    from ai_drama.core.models import Episode, Run, Scene, Shot, new_id
+
+    store = Store(workspace / "runs" / "test.sqlite3")
+    try:
+        run = store.create_run(Run(run_id=new_id("run"), idea="改台词", out_dir="runs"))
+        ep = Episode(run_id=run.run_id, idea="改台词", title="第一集")
+        scene = Scene(scene_id="sc01", title="甲板")
+        scene.shots.append(Shot(scene_id="sc01", order=1, action="站着", dialogue="苏蔓：原话"))
+        ep.scenes.append(scene)
+        store.save_episode(ep)
+        store.sync_shots(run.run_id, ep)
+
+        path = paths.episode_json(workspace, run.run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = ep.to_dict()
+        data["scenes"][0]["shots"][0]["dialogue"] = "苏蔓：改过的话"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        assert import_episode_json(workspace, store, run.run_id) == 1
+        assert store.get_episode(run.run_id).shots[0].dialogue == "苏蔓：改过的话"
+        # 没有那份文件时要说"没有"，而不是静默按旧库跑
+        assert import_episode_json(workspace, store, "run_不存在") is None
+    finally:
+        store.close()
 
 
 def test_speaker_of_only_matches_the_speaker_prefix_pattern():

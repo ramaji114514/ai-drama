@@ -61,23 +61,30 @@ def _one(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], str]:
         return ("skipped", {}, "无台词")
     dest = paths.voice(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
     voice = _voice_for(ctx, shot)
+    # 剧本行是给演员和配音看的（`苏蔓：（低声）不对。`），不是给人念的。
+    # 直接把它送进 TTS，模型会**把"苏蔓"和"低声"一起念出来** —— 成片里就变成
+    # 有人在念剧本。字幕那边一直用的是 speech_text()，配音这边漏了。
+    speech = media.speech_text(shot.dialogue)
     if dest.exists() and dest.stat().st_size > 0 and not ctx.force:
         ctx.asset(dest, kind="voice", via="audio", prompt=shot.dialogue,
                   shot_id=shot.shot_id,
-                  meta={"shot": shot.label, "voice": voice, "reused": True})
+                  meta={"shot": shot.label, "voice": voice, "spoken": speech,
+                        "reused": True})
         return ("skipped", {}, str(dest))
     try:
         usage = call_with_retry(
-            ctx.bundle.audio.tts, shot.dialogue, dest,
+            ctx.bundle.audio.tts, speech, dest,
             voice=voice, speed=1.0, shot_label=shot.label,
             label=f"{shot.label} tts",
         )
         ctx.store.update_shot(shot.shot_id, state="done", audio=str(dest))
         # 台词存进 prompt 字段：这是"这句配音说的是哪句词"，追改台词时要用。
+        # `spoken` 记的是**真正念出来的那句**（去掉了说话人与表演提示）。
         # 音色也记下来 —— 同一句词换个音色听起来就是另一个人。
         ctx.asset(dest, kind="voice", via="audio", prompt=shot.dialogue,
                   shot_id=shot.shot_id,
-                  meta={"shot": shot.label, "voice": voice, "reused": False})
+                  meta={"shot": shot.label, "voice": voice, "spoken": speech,
+                        "reused": False})
         return ("done", dict(usage or {}), str(dest))
     except Exception as exc:                      # noqa: BLE001
         ctx.heal_shot(shot, exc)
@@ -124,6 +131,33 @@ def run(ctx: StageContext) -> StageReport:
         report.notes.append(
             "整片没有台词。短剧通常不该这样 — 检查分镜阶段的 dialogue 字段是否被丢掉了。"
         )
+
+    # 谁还没有音色？在配音这一刻说出来，而不是等观众发现。
+    # stage01 会给新角色补音色，但 `resume --stages audio` 不会跑 stage01，
+    # 人也可能手改过 project.json —— 只看 stage01 的报告是漏的。
+    if ctx.project is not None:
+        voiceless = [c.name for c in ep.characters if not ctx.project.voice_for(c, "")]
+        if voiceless:
+            report.notes.append(
+                f"音色：[!] {'、'.join(voiceless)} 在角色圣经里没有音色，"
+                f"这一集用的是全局默认 {ctx.run.meta.get('voice') or 'female_01'}"
+                f" —— 声音大概率和形象对不上，在 "
+                f"projects/{ctx.project.project_id}/project.json 的 voice_map 里手填一个"
+            )
+        # 更常见的一种：台词没写说话人，画面里又不止一个人 —— 这时谁也认不出
+        # 该用谁的嗓子，只能吃全局默认。这是"声音和形象不匹配"最常见的来源。
+        ambiguous = [
+            s.label for s in talking
+            if not media.speaker_of(s.dialogue)
+            and len(characters_in_shot(ep, s)) != 1
+        ]
+        if ambiguous:
+            report.notes.append(
+                f"音色：[!] {len(ambiguous)} 镜的台词没写说话人、画面里又不止一个人"
+                f"（{'、'.join(ambiguous[:5])}{'…' if len(ambiguous) > 5 else ''}），"
+                f"这些句子用的是全局默认 {ctx.run.meta.get('voice') or 'female_01'}"
+                f" —— 在台词行首写上「说话人：」就能各用各的嗓子"
+            )
 
     with ThreadPoolExecutor(max_workers=max(1, ctx.concurrency)) as pool:
         futures = {pool.submit(_one, ctx, s): s for s in talking}

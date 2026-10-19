@@ -270,10 +270,39 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result["state"] == "done" else 2
 
 
+def import_episode_json(root: Path, store: Any, run_id: str) -> Optional[int]:
+    """把 run 目录里的 `episode.json` 读回库。返回镜头数，文件不存在返回 None。
+
+    `episode.json` 一直是"只写不读"的产物，所以文档里那句"直接改 episode.json
+    再只重跑受影响阶段"其实一直做不到 —— 改完 resume，库里还是旧的那份。
+    这个函数把它补上。
+
+    做成**显式**（`resume --from-json`）而不是默认行为，是因为
+    `run.py shots` 之类的命令改的是库，每次都让文件盖回去会把人刚改的东西冲掉。
+    """
+    from .core.models import Episode          # 局部导入：只有这里有需要
+
+    ep_json = paths.episode_json(root, run_id)
+    if not ep_json.exists():
+        return None
+    ep = Episode.from_dict(json.loads(ep_json.read_text(encoding="utf-8")))
+    if not ep.run_id:
+        ep.run_id = run_id
+    store.save_episode(ep)
+    store.sync_shots(run_id, ep)
+    return len(ep.shots)
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     load_env()
     store = open_store(args)
     root = Path(args.root).resolve() if args.root else Path.cwd()
+    if getattr(args, "from_json", False):
+        shots = import_episode_json(root, store, args.run_id)
+        if shots is None:
+            print(f"没有 episode.json：{paths.episode_json(root, args.run_id)}")
+            return 1
+        print(f"已按 episode.json 回灌：{shots} 镜")
     pipe = Pipeline(
         root, store, registry.build_bundle(),
         budget_usd=args.budget, concurrency=args.concurrency,
@@ -377,8 +406,13 @@ def cmd_project_show(args: argparse.Namespace) -> int:
         voice = proj.voice_for(c, "（未指定，用 --voice）")
         alias = f"  别名 {'、'.join(c.aliases)}" if c.aliases else ""
         print(f"  {c.name:<12} {c.char_id or '无id':<16} {shot:<34} 音色 {voice}{alias}")
-        if args.verbose and c.desc:
-            print(f"      {c.desc}")
+        if args.verbose:
+            # 自动定下来的音色，"凭什么"也要能看见 —— 觉得不对才知道该改哪条
+            note = proj.voice_notes.get(c.char_id or "") or proj.voice_notes.get(c.name)
+            if note:
+                print(f"      音色依据：{note}")
+            if c.desc:
+                print(f"      {c.desc}")
 
     episodes = [r for r in store.list_runs()
                 if (r.meta or {}).get("project_id") == proj.project_id]
@@ -409,7 +443,11 @@ def cmd_project_set(args: argparse.Namespace) -> int:
         canon.anchor_prompt = args.anchor_prompt
     if args.voice is not None:
         # 键优先写 id：改了名字之后音色还跟着这个人走
-        proj.voice_map[canon.char_id or canon.name] = args.voice
+        key = canon.char_id or canon.name
+        proj.voice_map[key] = args.voice
+        # 人手填的就不该再留一条"自动推断"的笔记 —— 否则文件在撒谎
+        proj.voice_notes.pop(key, None)
+        proj.voice_notes.pop(canon.name, None)
     p = proj.save(root)
     print(f"已更新 {canon.name}（{canon.char_id or '无id'}）-> {p}")
     if args.anchor_prompt is not None:
@@ -1105,6 +1143,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--budget", type=float, default=0.0)
     sp.add_argument("--concurrency", type=int, default=3)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument(
+        "--from-json", action="store_true", dest="from_json",
+        help="先把 run 目录里的 episode.json 读回库再跑：手改过台词/时长/景别之后用它",
+    )
     sp.add_argument("--no-strict-qc", action="store_true")
     sp.add_argument("--no-subtitles", action="store_true")
     sp.add_argument("--aspect", default="", metavar="W:H",
