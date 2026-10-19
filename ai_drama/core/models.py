@@ -100,11 +100,23 @@ class Shot:
     scene_id: str
     order: int
     action: str = ""            # 画面里发生什么（给视频模型）
+    #: 这一镜**结束那一刻**画面是什么样（纯视觉）。
+    #:
+    #: 为什么不能从 action 推出来：action 描述的是"这一镜发生了什么"，
+    #: 而首尾帧工具要的是"第一帧长什么样"和"最后一帧长什么样" —— 一个是
+    #: 过程，一个是两个静止画面。从过程推结论只能靠猜，猜出来的尾帧会
+    #: 让模型把动作再演一遍。空字符串表示模型没写，此时 compose_last_frame
+    #: 会退化成"用 action 的末态"，并在报告里说清楚这是退化结果。
+    end_action: str = ""
     dialogue: str = ""          # 台词（给 TTS，绝不允许拼进画面提示词）
     duration: float = 4.0       # 秒
     framing: str = "medium"     # establishing / close / medium / wide ...
     image_prompt: str = ""      # 关键帧提示词（无对白、无音效）
     video_prompt: str = ""      # 运动提示词（无对白、无音效）
+    #: 尾帧提示词 —— 给"首帧+尾帧"这类视频工具用的第二个画面。
+    #: 与 image_prompt（首帧）对称：同样的风格、角色锚点、景别，只是把
+    #: 中间那句换成 end_action。end_action 为空时会退化成 action 并记一笔。
+    last_frame: str = ""
 
     # 运行时状态（由 store 维护，断点续跑的依据）
     shot_id: str = field(default_factory=lambda: new_id("shot"))

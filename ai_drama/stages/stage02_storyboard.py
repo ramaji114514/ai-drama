@@ -167,6 +167,24 @@ def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
     return shot_identity_prompt(body, labels)
 
 
+def compose_last_frame(ep, shot: Shot, labels=()) -> str:
+    """尾帧提示词 —— 这一镜**结束那一刻**的画面。
+
+    与 compose_image_prompt 对称（同样的风格、角色锚点、景别），只把中间那句
+    从 action 换成 end_action。**没有 end_action 就退回 action**，因为老项目
+    和没照新 schema 写的模型都不会给这个字段；退回会让尾帧变成首帧的复述，
+    所以这里不假装它等价 —— 调用方会把"退化了"记进报告。
+    """
+    parts = [ep.style or ""]
+    ch = character_in_shot(ep, shot)
+    if ch:
+        parts.append(f"角色 {ch.name}：{ch.desc}")
+    parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
+    parts.append(shot.end_action or shot.action)
+    body = "，".join(p for p in parts if p)
+    return shot_identity_prompt(body, labels)
+
+
 def compose_video_prompt(shot: Shot) -> str:
     """运动提示词 — 只描述摄影机和画面元素的运动，不含任何听觉信息。
 
@@ -325,6 +343,7 @@ def run(ctx: StageContext) -> StageReport:
         if not shot.image_prompt or ctx.force:
             shot.image_prompt = compose_image_prompt(ep, shot, labels)
             shot.video_prompt = compose_video_prompt(shot)
+            shot.last_frame = compose_last_frame(ep, shot, labels)
             changed += 1
         # 时长统一在这里复核：模型给的值不可信，公式给的值才可复现
         refined = estimate_shot_seconds(shot)
