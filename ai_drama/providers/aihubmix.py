@@ -267,11 +267,19 @@ class AiHubMixVideo(VideoProvider):
             "generate_audio": False,
         }
         image = request.get("image_path")
-        if image and Path(str(image)).exists():
-            payload["frame_images"] = [{
+        # **aihubmix 只收公网 URL，不收 data URL。** 实测把 1.1MB 的
+        # `data:image/png;base64,...` 塞进 `image_url.url` 会被 400 拒掉
+        # （`{"code":"schema_violation"}`，看不出是这一项的问题）；
+        # 而同样的请求去掉 frame_images 就通过 schema 检查。
+        # 在关键帧能被公网访问之前，这里不发首帧 = 纯文生视频。
+        # 代价要知道：镜头之间没有画面连续性，续拍也接不上（第 2 段本来
+        # 要靠第 1 段的尾帧），同一角色跨镜头长相会飘。
+        if str(image or "").startswith(("http://", "https://")):
+            payload["frame_images"] = {
                 "frame_type": "first_frame",
-                "image_url": {"url": _data_url(Path(str(image)))},
-            }]
+                "image_url": {"url": str(image)},
+            }
+            payload["frame_images"] = [payload["frame_images"]]
         if not payload["prompt"] and "frame_images" not in payload:
             raise ProviderError("既没有 prompt 也没有首帧，模型无从生成",
                                 retryable=False, provider=self.name)

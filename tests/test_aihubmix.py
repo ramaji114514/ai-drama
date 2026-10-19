@@ -127,18 +127,30 @@ def test_the_payload_turns_audio_generation_off(keyed):
     assert payload["model"] == "doubao-seedance-2-5-260628"
 
 
-def test_the_first_frame_goes_into_frame_images_not_a_bare_image(keyed, tmp_path):
+def test_only_a_public_first_frame_is_sent(keyed, tmp_path):
+    """aihubmix 只收公网 URL。
+
+    本地图不能塞 data URL 顶上去 —— 实测 1.1MB 的 base64 会被 400
+    `schema_violation` 拒掉，而报错看不出是哪一项。所以本地文件干脆不发
+    首帧（退化成纯文生视频），已经是 http(s) 的才进 frame_images。
+    """
     kf = tmp_path / "kf.png"
     kf.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
     client = _Client()
     prov = _provider(client)
+
     prov.submit({"prompt": "起雾", "duration": 10, "size": (720, 1280),
                  "image_path": str(kf), "dest": str(tmp_path / "o.mp4")})
     payload = client.posts[0][1]
+    assert "frame_images" not in payload
     assert "image" not in payload, "字段名写错不会报错，只会被安静地忽略"
-    frame = payload["frame_images"][0]
+
+    prov.submit({"prompt": "起雾", "duration": 10, "size": (720, 1280),
+                 "image_path": "https://example.com/kf.png",
+                 "dest": str(tmp_path / "o2.mp4")})
+    frame = client.posts[1][1]["frame_images"][0]
     assert frame["frame_type"] == "first_frame"
-    assert frame["image_url"]["url"].startswith("data:image/png;base64,")
+    assert frame["image_url"]["url"] == "https://example.com/kf.png"
 
 
 def test_duration_is_rounded_to_a_whole_second(keyed):
