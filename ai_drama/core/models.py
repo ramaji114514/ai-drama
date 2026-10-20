@@ -118,6 +118,19 @@ class Shot:
     #: 中间那句换成 end_action。end_action 为空时会退化成 action 并记一笔。
     last_frame: str = ""
 
+    #: 负向提示词 —— 关键帧/首帧用。
+    #:
+    #: 为什么必须单独一个字段：可灵、即梦、Sora、Veo 全都有独立的「负向提示词」
+    #: 输入框，而把"不要有畸形手"写进正向提示词是**反效果**的 —— 正向提示词里
+    #: 每个名词都会被当成"要画的东西"，模型只认名词，不太认否定。
+    #: 拼在正向里的"no watermark"因此经常换来一个水印。
+    negative_prompt: str = ""
+
+    #: 负向提示词 —— 视频用。和上面那条分开，因为两者防的不是一类事故：
+    #: 静态图坏在解剖和版面（多指、水印），视频坏在**时间维度**上
+    #: （变脸、闪烁、跳帧、动作僵在半路）。写在一起就是一段谁也不专心的词。
+    video_negative: str = ""
+
     # 运行时状态（由 store 维护，断点续跑的依据）
     shot_id: str = field(default_factory=lambda: new_id("shot"))
     state: str = "pending"      # pending / running / done / failed / skipped

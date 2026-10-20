@@ -328,8 +328,11 @@ def test_a_run_exposes_its_storyboard_and_the_files_behind_it(
     shot = sb["scenes"][0]["shots"][0]
     # 提示词要带出来 —— 页面上那几个可复制的文本框读的就是这几个字段，
     # 少一个，用户就看到一个空框（或者根本看不到那一栏）。
-    for key in ("image_prompt", "last_frame", "video_prompt", "end_action"):
+    for key in ("image_prompt", "last_frame", "video_prompt", "end_action",
+                "negative_prompt", "video_negative"):
         assert key in shot, f"分镜没把 {key} 带出去"
+    assert shot["negative_prompt"], "负向词是空的话，页面上那个框就是摆设"
+    assert shot["video_negative"], "视频负向词同样要带出去"
     assert shot["image_prompt"], "关键帧都渲好了，首帧提示词不该是空的"
     assert shot["last_frame"], "尾帧至少会退化成 action，不该是空字符串"
     # 定妆照那一段在角色卡上，不在分镜上 —— 它是"定这张脸"的提示词，

@@ -210,6 +210,10 @@ def _shot_payload(root: Path, run_id: str, scene_id: str, shot: Any,
         "last_frame": getattr(shot, "last_frame", ""),
         "video_prompt": getattr(shot, "video_prompt", ""),
         "end_action": getattr(shot, "end_action", ""),
+        # 负向词必须一起带出去：可灵/即梦/Sora/Veo 的粘贴框是「正向 + 负向」两个，
+        # 只给正向等于让用户自己再编一遍 —— 而他手里没有这一镜的角色锚点。
+        "negative_prompt": getattr(shot, "negative_prompt", ""),
+        "video_negative": getattr(shot, "video_negative", ""),
         "duration": float(getattr(shot, "duration", 0.0) or 0.0),
         "characters": list(getattr(shot, "characters", None) or []),
         "declared": getattr(shot, "characters", None) is not None,

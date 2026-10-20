@@ -51,6 +51,61 @@ CAMERA_MOVE = {
 
 NEGATIVE = "文字, 字幕, 水印, 畸形手指, 多手多脚, 面部崩坏, 低分辨率, 模糊"
 
+# 负向词分三类，缺一不可：
+#   1. 解剖 —— 手和脸是图像模型最先崩的地方，也是观众第一眼看的地方
+#   2. 版面 —— 文字/水印/字幕一旦出现，这一张就废了，只能重新出
+#   3. 画质 —— 过曝、糊、塑料皮肤，属于"看着不对但说不出哪儿不对"
+_NEG_ANATOMY = ("畸形手指", "多余手指", "多手多脚", "肢体重复", "五官错位",
+                "面部崩坏", "皮肤塑料感")
+_NEG_LAYOUT = ("文字", "字幕", "水印", "logo", "签名", "边框", "分屏")
+_NEG_QUALITY = ("低分辨率", "模糊", "过曝", "噪点", "色块")
+#: 视频专属。坏在**时间维度**上，静态图里根本不会有这几类事故，
+#: 混进图片负向里就只是噪声。
+_NEG_MOTION = ("人物变脸", "五官漂移", "肢体扭曲", "多余人物", "画面闪烁",
+               "跳帧", "镜头穿模", "背景突变", "动作僵住不动")
+
+#: action 自己开头就写了景别时，骨架不要再补一句：
+#: "极特写，局部细节充满画面，俯拍特写：……" 这种重复会让模型试着把
+#: 两个景别都装进画面（实测出来是画中画）。
+_FRAMING_WORDS = ("特写", "近景", "中景", "全景", "远景", "俯拍", "仰拍", "航拍")
+
+
+def _action_already_names_framing(action: str) -> bool:
+    head = (action or "")[:16]
+    return any(w in head for w in _FRAMING_WORDS)
+
+
+def _join_neg(groups) -> str:
+    out: List[str] = []
+    for group in groups:
+        for word in group:
+            if word not in out:
+                out.append(word)
+    return "、".join(out)
+
+
+def compose_negative_prompt(ep, shot: Shot) -> str:
+    """首帧/关键帧的负向提示词。
+
+    为什么单独成段而不是拼进正向：正向提示词里每个名词都会被当成"要画的东西"，
+    模型只认名词、不太认否定。所以"不要水印"写进正向，经常换回来一个水印。
+    可灵、即梦、Sora、Veo 都有独立的负向输入框，这段就是喂那个框的。
+    """
+    # 空镜不放解剖类负向：画面里本来没有人，写"畸形手指"反而把模型往人上引。
+    if characters_on_screen(ep, shot):
+        return _join_neg([_NEG_ANATOMY, _NEG_LAYOUT, _NEG_QUALITY])
+    return _join_neg([_NEG_LAYOUT, _NEG_QUALITY])
+
+
+def compose_video_negative(shot: Shot) -> str:
+    """视频的负向提示词 —— 只放"动起来才会坏"的那几种，加上版面。
+
+    时长越长，变脸和闪烁越容易发生，所以它跟 `shot.duration` 不是无关的：
+    这里不按时长加词（模型不认"几秒内别变脸"），但重跑时长时这段不必动。
+    """
+    return _join_neg([_NEG_MOTION, _NEG_LAYOUT])
+
+
 
 def characters_by_text(ep, shot: Shot) -> List[Character]:
     """**猜**这一镜有谁：在镜头文本里找角色名（或别名）的子串。
@@ -161,7 +216,10 @@ def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
     ch = character_in_shot(ep, shot)
     if ch:
         parts.append(f"角色 {ch.name}：{ch.desc}")
-    parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
+    # 景别是"这一镜要怎么取景"，action 里往往已经写过了（"俯拍特写：……"）。
+    # 两句都留，模型会以为要同时满足两个景别。
+    if not _action_already_names_framing(shot.action):
+        parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(shot.action)
     body = "，".join(p for p in parts if p)
     return shot_identity_prompt(body, labels)
@@ -175,12 +233,14 @@ def compose_last_frame(ep, shot: Shot, labels=()) -> str:
     和没照新 schema 写的模型都不会给这个字段；退回会让尾帧变成首帧的复述，
     所以这里不假装它等价 —— 调用方会把"退化了"记进报告。
     """
+    end = shot.end_action or shot.action
     parts = [ep.style or ""]
     ch = character_in_shot(ep, shot)
     if ch:
         parts.append(f"角色 {ch.name}：{ch.desc}")
-    parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
-    parts.append(shot.end_action or shot.action)
+    if not _action_already_names_framing(end):
+        parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
+    parts.append(end)
     body = "，".join(p for p in parts if p)
     return shot_identity_prompt(body, labels)
 
@@ -195,8 +255,18 @@ def compose_video_prompt(shot: Shot) -> str:
 
     什么时候该加：如果哪天视频侧改成拿**角色资产图**做参考，
     就要用 identity.reference_block，并且注意顺序与图片列表对齐。
+
+    为什么要写"匀速完成"：不写节奏，模型会在长镜头里自己发挥 —— 前 2 秒
+    演完整段动作，剩下 13 秒人物在画面里呆着；或者反过来拖到最后才动。
+    这不是提示词写得不够美，是它不知道这段有多长。
     """
-    return f"{shot.action}。{CAMERA_MOVE.get(shot.framing, '镜头缓推')}。"
+    move = CAMERA_MOVE.get(shot.framing, "镜头缓推")
+    seconds = float(shot.duration or 0.0)
+    if seconds >= 1:
+        pace = f"{seconds:.0f} 秒内匀速完成，不加速也不放慢"
+    else:
+        pace = "匀速完成，不加速也不放慢"
+    return f"{shot.action}。{move}，{pace}。"
 
 
 def _dryrun_portrait_feeding_a_real_model(ctx: StageContext, portraits_in_play: int) -> bool:
@@ -344,6 +414,8 @@ def run(ctx: StageContext) -> StageReport:
             shot.image_prompt = compose_image_prompt(ep, shot, labels)
             shot.video_prompt = compose_video_prompt(shot)
             shot.last_frame = compose_last_frame(ep, shot, labels)
+            shot.negative_prompt = compose_negative_prompt(ep, shot)
+            shot.video_negative = compose_video_negative(shot)
             changed += 1
         # 时长统一在这里复核：模型给的值不可信，公式给的值才可复现
         refined = estimate_shot_seconds(shot)

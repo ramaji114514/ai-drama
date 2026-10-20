@@ -309,6 +309,10 @@ function exportPrompts() {
       if (sh.image_prompt) line(`\n【首帧】\n${sh.image_prompt}`);
       if (sh.last_frame) line(`\n【尾帧】\n${sh.last_frame}`);
       if (sh.video_prompt) line(`\n【运镜】\n${sh.video_prompt}`);
+      // 负向词单独成段：视频模型的粘贴框是「正向一个、负向一个」，
+      // 混在一段里用户还得自己切，切错了正向里就多了几个"不要"。
+      if (sh.negative_prompt) line(`\n【负向·图】\n${sh.negative_prompt}`);
+      if (sh.video_negative) line(`\n【负向·视频】\n${sh.video_negative}`);
     });
   });
   const text = out.join('\n') + '\n';
@@ -346,6 +350,10 @@ function shotPrompts(sh) {
     ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
     ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
     ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
+    ['负向·图（不要什么）', sh.negative_prompt,
+      '粘到「负向提示词」框。别塞进正向 —— 正向里每个名词都会被当成要画的东西'],
+    ['负向·视频（别动坏）', sh.video_negative,
+      '视频专用的那一组：变脸、闪烁、跳帧。图生视频和首帧图各用各的'],
   ]);
 }
 

@@ -94,7 +94,10 @@ def _submit_one(ctx: StageContext, shot: Shot, part: int, total: int,
         "dest": str(dest),
         "seed": _seed_for(shot, part, total),
         "part": (part, total),             # provider 可据此做日志/去重
-        "negative_prompt": "文字, 字幕, 水印, 面部崩坏, 闪烁, 形变",
+        # 负向词由 stage02 按这一镜现算（空镜不写解剖、有人才写），
+        # 这里不再硬编码一份 —— 之前那个常量跟 shot 无关，等于每镜都发同一句，
+        # 而空镜收到"面部崩坏"会把模型往人脸上带。
+        "negative_prompt": shot.video_negative or "",
     }
     label = f"{shot.label} submit" + (f" p{part}/{total}" if total > 1 else "")
     job_id = call_with_retry(ctx.bundle.video.submit, request, label=label)
