@@ -24,6 +24,15 @@ function fmtBytes(n) {
 }
 
 const fmtMoney = (n) => '$' + (Number(n) || 0).toFixed(4);
+
+/* 一条 run 的钱怎么念。dryrun 的价是编的，混在一起念就等于说这次真花了钱。 */
+function moneyLabel(r) {
+  const real = Number(r.real_money) || 0;
+  const sim = Number(r.simulated_money) || 0;
+  if (sim > 0 && real > 0) return `${fmtMoney(real)} + ${fmtMoney(sim)} 虚拟`;
+  if (sim > 0 && real === 0) return `${fmtMoney(sim)} 虚拟`;
+  return fmtMoney(real || r.money);
+}
 const fmtSec = (n) => (Number(n) || 0).toFixed(2) + 's';
 
 function badge(state) {
@@ -104,7 +113,7 @@ function renderRuns() {
     const title = r.title || r.idea || '(没有标题)';
     return `<li data-run="${esc(r.run_id)}">
       <span class="t">${badge(r.state)} ${esc(title)}</span>
-      <span class="m">${esc(no)}${esc(r.run_id)} · ${fmtMoney(r.money)}</span>
+      <span class="m">${esc(no)}${esc(r.run_id)} · ${moneyLabel(r)}</span>
     </li>`;
   }).join('');
   $('#runs').querySelectorAll('li[data-run]').forEach((li) => {
@@ -204,7 +213,7 @@ function renderRun() {
     ['storyboard', '分镜', sb ? sb.shots_total + ' 镜' : ''],
     ['timeline', '时间轴', d.timeline ? d.timeline.length + ' 段' : ''],
     ['qc', '质检', qc ? qc.state : ''],
-    ['cost', '成本', d.cost ? fmtMoney(d.cost.total_money) : ''],
+    ['cost', '成本', d.cost ? moneyLabel({ ...d.cost, money: d.cost.total_money }) : ''],
     ['assets', '资产', d.assets ? d.assets.total + ' 件' : ''],
     ['film', '成片', ''],
   ];
@@ -486,27 +495,34 @@ function tabCost(d) {
   const byStage = Object.entries(c.by_stage || {}).sort((a, b) => b[1] - a[1]);
   const byProv = Object.entries(c.by_provider || {}).sort((a, b) => b[1] - a[1]);
   const maxStage = Math.max(0.0001, ...byStage.map(([, v]) => v));
+  const real = Number(c.real_money) || 0;
+  const sim = Number(c.simulated_money) || 0;
   return `<div class="grid" style="margin-bottom:16px">
-    <div class="stat"><div class="k">总计</div><div class="v">${
-      fmtMoney(c.total_money)}</div></div>
+    <div class="stat"><div class="k">实际花费</div><div class="v">${
+      fmtMoney(real)}</div>${
+      sim > 0 ? `<div class="k" style="margin-top:6px">另有 ${fmtMoney(sim)} 为占位估算
+        （dryrun 编的价，没有真的扣费）</div>` : ''}</div>
     <div class="stat"><div class="k">调用次数</div><div class="v">${c.calls || 0}</div></div>
   </div>
   <h3>按阶段</h3>
   <table><thead><tr><th>阶段</th><th>钱</th><th style="width:40%">占比</th>
     </tr></thead><tbody>${byStage.map(([k, v]) => `<tr>
-      <td>${esc(k)}</td><td class="num">${fmtMoney(v)}</td>
+      <td>${esc(k)}${(c.by_stage_simulated || {})[k] ? ' <span class="tag">虚拟</span>' : ''}</td>
+      <td class="num">${fmtMoney(v)}</td>
       <td><div style="background:var(--accent);height:7px;border-radius:4px;
         width:${Math.max(2, (v / maxStage) * 100)}%"></div></td>
     </tr>`).join('')}</tbody></table>
   <h3>按 provider</h3>
   <table><thead><tr><th>provider</th><th>钱</th></tr></thead><tbody>${
-    byProv.map(([k, v]) => `<tr><td>${esc(k)}</td>
+    byProv.map(([k, v]) => `<tr><td>${esc(k)}${
+      (c.by_provider_simulated || {})[k] ? ' <span class="tag">虚拟</span>' : ''}</td>
       <td class="num">${fmtMoney(v)}</td></tr>`).join('')}</tbody></table>
   <h3>明细 ${(c.lines || []).length} 条</h3>
   <table><thead><tr><th>阶段</th><th>provider</th><th>单位</th><th>用量</th>
     <th>钱</th><th>镜头</th></tr></thead><tbody>${
     (c.lines || []).slice(0, 300).map((l) => `<tr>
-      <td>${esc(l.stage)}</td><td>${esc(l.provider)}</td><td>${esc(l.unit)}</td>
+      <td>${esc(l.stage)}</td><td>${esc(l.provider)}${
+      l.simulated ? ' <span class="tag">虚拟</span>' : ''}</td><td>${esc(l.unit)}</td>
       <td class="num">${Number(l.amount || 0).toFixed(2)}</td>
       <td class="num">${fmtMoney(l.money)}</td>
       <td>${esc(l.shot_label || '')}</td></tr>`).join('')}</tbody></table>

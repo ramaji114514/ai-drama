@@ -90,7 +90,11 @@ def test_resume_after_a_killed_stage_reuses_finished_work(workspace: Path, need_
     pipe, store = _pipeline(workspace)
     run = pipe.start("测试断点续跑", scenes=1, shots_per_scene=2)
     partial = pipe.run(run, stages=["script", "storyboard", "frames"])
-    assert partial["state"] == "failed"          # 没跑到 concat，自然没有成片
+    # 没请求出片阶段 → 这次要的东西（分镜 + 关键帧）全做完了，就是 done。
+    # 以前这里判 failed：把"没有片子"和"出错了"混成一件事，于是只产提示词
+    # 的用法（根本不跑 video/concat）每次刷新提示词都红着一条"失败"。
+    assert partial["state"] == "done"
+    assert partial["error"] is None
 
     kf_dir = workspace / run.out_dir / "scenes"
     before = {p: p.stat().st_mtime for p in kf_dir.rglob("*.png")}

@@ -159,7 +159,7 @@ def run(ctx: StageContext) -> StageReport:
     missing = [s for s in ep.shots if not (s.end_action or "").strip()]
     if missing and ctx.bundle.text.name != "dryrun":
         got, extra = _fill_end_actions(ctx, missing)
-        report.money += extra
+        report.add_money(extra, provider=ctx.bundle.text.name)
         if got:
             report.notes.append(f"尾帧：模型漏了 end_action，补写了 {got}/{len(missing)} 镜")
         left = len(missing) - got

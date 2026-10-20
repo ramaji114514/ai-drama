@@ -160,8 +160,12 @@ def runs_payload(root: Path, store: Any, *, limit: int = 50) -> List[Dict[str, A
     out: List[Dict[str, Any]] = []
     for run in store.list_runs(limit=limit):
         meta = run.meta or {}
+        real_money = simulated_money = 0.0
         try:
-            money = float(store.cost_summary(run.run_id).get("total_money") or 0.0)
+            summary = store.cost_summary(run.run_id)
+            money = float(summary.get("total_money") or 0.0)
+            real_money = float(summary.get("real_money") or 0.0)
+            simulated_money = float(summary.get("simulated_money") or 0.0)
         except Exception:                       # noqa: BLE001
             money = 0.0
         ep = store.get_episode(run.run_id)
@@ -178,6 +182,8 @@ def runs_payload(root: Path, store: Any, *, limit: int = 50) -> List[Dict[str, A
             "episode_no": meta.get("episode_no", None),
             "aspect": meta.get("aspect", ""),
             "money": round(money, 6),
+            "real_money": round(real_money, 6),
+            "simulated_money": round(simulated_money, 6),
             "final_video": file_ref(root, run.final_video) if run.final_video else None,
         })
     return out

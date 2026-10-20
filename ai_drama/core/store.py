@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS costs (
     unit        TEXT NOT NULL,
     amount      REAL NOT NULL,
     money       REAL NOT NULL,
+    simulated   INTEGER NOT NULL DEFAULT 0,
     shot_label  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
@@ -117,6 +118,7 @@ class Store:
     _ADDED_COLUMNS = (
         ("shots", "synced", "TEXT"),
         ("shots", "job_ids", "TEXT"),
+        ("costs", "simulated", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def __init__(self, db_path: str | Path):
@@ -138,6 +140,13 @@ class Store:
             have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
             if column not in have:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        # 老账单里的 provider 名还留着，占位实现一眼能认出来（registry 统一叫
+        # `dryrun-<kind>`）。所以这不是猜，是把一条本来就算得出来的事实补上 ——
+        # 不补的话，升级后打开老 run，那 0.18 美元会被当成真花的钱。
+        # 幂等：只碰还没标过的行，正常启动时扫描到 0 行。
+        self._conn.execute(
+            "UPDATE costs SET simulated=1 WHERE simulated=0 AND provider LIKE 'dryrun%'"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -313,23 +322,28 @@ class Store:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO costs (run_id, provider, stage, unit, amount, money,"
-                " shot_label, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                " simulated, shot_label, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     entry.run_id, entry.provider, entry.stage, entry.unit,
-                    entry.amount, entry.money, entry.shot_label, entry.created_at,
+                    entry.amount, entry.money, 1 if entry.simulated else 0,
+                    entry.shot_label, entry.created_at,
                 ),
             )
 
     def cost_summary(self, run_id: str) -> Dict[str, Any]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT provider, stage, unit, SUM(amount) AS amount, SUM(money) AS money"
+                "SELECT provider, stage, unit, SUM(amount) AS amount, SUM(money) AS money,"
+                " MAX(simulated) AS simulated"
                 " FROM costs WHERE run_id=? GROUP BY provider, stage, unit"
                 " ORDER BY money DESC",
                 (run_id,),
             ).fetchall()
             total = self._conn.execute(
-                "SELECT COALESCE(SUM(money),0) AS m FROM costs WHERE run_id=?", (run_id,)
+                "SELECT COALESCE(SUM(money),0) AS m,"
+                " COALESCE(SUM(CASE WHEN simulated THEN money ELSE 0 END),0) AS sim"
+                " FROM costs WHERE run_id=?",
+                (run_id,),
             ).fetchone()
             calls = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM costs WHERE run_id=?", (run_id,)
@@ -341,6 +355,7 @@ class Store:
                 "unit": r["unit"],
                 "amount": round(float(r["amount"] or 0), 4),
                 "money": round(float(r["money"] or 0), 6),
+                "simulated": bool(r["simulated"]),
             }
             for r in rows
         ]
@@ -348,17 +363,35 @@ class Store:
         # "钱花在哪一步" 和 "钱花在哪家"。
         by_stage: Dict[str, float] = {}
         by_provider: Dict[str, float] = {}
+        #: 上面两张表的"其中多少是占位估算"。键集合与真扣费那张一致，
+        #: 差值就是真花的钱 —— 展示层不用自己再减一遍。
+        by_stage_simulated: Dict[str, float] = {}
+        by_provider_simulated: Dict[str, float] = {}
         for line in lines:
+            if not line["money"]:
+                continue
             by_stage[line["stage"]] = round(by_stage.get(line["stage"], 0.0) + line["money"], 6)
             by_provider[line["provider"]] = round(
                 by_provider.get(line["provider"], 0.0) + line["money"], 6
             )
+            if line["simulated"]:
+                by_stage_simulated[line["stage"]] = round(
+                    by_stage_simulated.get(line["stage"], 0.0) + line["money"], 6
+                )
+                by_provider_simulated[line["provider"]] = round(
+                    by_provider_simulated.get(line["provider"], 0.0) + line["money"], 6
+                )
+        simulated_money = round(float(total["sim"]), 6)
         return {
             "run_id": run_id,
             "total_money": round(float(total["m"]), 6),
+            "simulated_money": simulated_money,
+            "real_money": round(float(total["m"]) - simulated_money, 6),
             "calls": int(calls["n"]),
             "by_stage": dict(sorted(by_stage.items(), key=lambda kv: -kv[1])),
             "by_provider": dict(sorted(by_provider.items(), key=lambda kv: -kv[1])),
+            "by_stage_simulated": by_stage_simulated,
+            "by_provider_simulated": by_provider_simulated,
             "lines": lines,
         }
 

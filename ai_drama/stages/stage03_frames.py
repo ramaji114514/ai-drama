@@ -113,7 +113,7 @@ def run(ctx: StageContext) -> StageReport:
                 # 统一在收集点记账：只有这里能看到完整的 shot 上下文，
                 # 也是唯一能保证"花了就一定记上"的位置。
                 ctx.ledger.add(usage, stage="frames", shot_label=shot.label)
-                report.money += float(usage.get("money") or 0)
+                report.add_usage(usage)
             if status == "done":
                 report.processed += 1
                 shot.keyframe = info

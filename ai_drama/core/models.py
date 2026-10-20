@@ -311,6 +311,10 @@ class CostEntry:
     unit: str               # token / image / second / char
     amount: float
     money: float            # 折算成美元
+    #: 这笔钱是**占位估算**（dryrun provider 编出来的价），还是真扣费。
+    #: 必须落库，不能只在展示层猜：账单一旦跨进程重算（CLI 打印、网页汇总、
+    #: 预算报表），没有这个标志就只能靠 provider 名再猜一次，而那是脆的。
+    simulated: bool = False
     run_id: str = ""
     shot_label: str = ""
     created_at: str = field(default_factory=now_iso)

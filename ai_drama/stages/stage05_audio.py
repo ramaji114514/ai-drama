@@ -169,7 +169,7 @@ def run(ctx: StageContext) -> StageReport:
                 status, usage, info = "failed", {}, f"{type(exc).__name__}: {exc}"
             if usage:
                 ctx.ledger.add(usage, stage="audio", shot_label=shot.label)
-                report.money += float(usage.get("money") or 0)
+                report.add_usage(usage)
             if status == "done":
                 report.processed += 1
                 shot.audio = info
@@ -209,7 +209,7 @@ def run(ctx: StageContext) -> StageReport:
                     for path, usage in pairs:
                         if usage:
                             ctx.ledger.add(usage, stage="audio", shot_label=shot.label)
-                            report.money += float(usage.get("money") or 0)
+                            report.add_usage(usage)
                         done += 1
                         report.artifacts.setdefault("sfx", []).append(path)
             report.notes.append(f"音效 {done} 条 / {len(sfx_shots)} 镜，失败 {failed}")
@@ -223,7 +223,7 @@ def run(ctx: StageContext) -> StageReport:
                 bgm, duration=max(5.0, ep.total_duration), mood=ep.style
             )
             ctx.ledger.add(usage, stage="audio")
-            report.money += float(usage.get("money") or 0)
+            report.add_usage(usage)
             report.artifacts["bgm"] = str(bgm)
             ctx.asset(bgm, kind="bgm", via="audio", prompt=ep.style,
                       meta={"duration": round(float(ep.total_duration or 0), 3),

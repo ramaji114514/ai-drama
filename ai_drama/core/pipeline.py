@@ -206,6 +206,12 @@ class Pipeline:
         # "没查成"和"查过没问题"在最终状态里绝对不能长得一样，
         # 否则一次 ffprobe 缺失就能让整批片子带着未知问题被当成合格品交付。
         has_video = final.exists() and final.stat().st_size > 0
+        # 这次压根没跑出片阶段 —— 那就是"提示词模式"，没有片子是**正常结果**。
+        # 之前一律判 failed，于是每次 `--stages storyboard --force` 刷一版提示词，
+        # 列表里那一条就红成"失败"，用户会以为提示词没生成出来。
+        asked_for_video = has_video or any(
+            s in ("video", "concat", "lipsync") for s in todo
+        )
         qc_state = ctx.qc_report.state.value if ctx.qc_report is not None else ""
         qc_ok = (qc_state == "pass") or not qc_state
         blocked = self.strict_qc and has_video and not qc_ok
@@ -217,8 +223,12 @@ class Pipeline:
                 f"详见 {paths.qc_report(self.root, run.run_id)}"
             )
         else:
-            state = "done" if has_video else "failed"
-            error = None if has_video else "流水线结束但没有产出 final_video"
+            ok = has_video or not asked_for_video
+            state = "done" if ok else "failed"
+            if ok:
+                error = None
+            else:
+                error = "流水线结束但没有产出 final_video"
             if has_video and not qc_ok:
                 error = f"已放行，但质检结论是 {qc_state}（严格模式已关闭）"
 

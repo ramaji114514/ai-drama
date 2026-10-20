@@ -425,7 +425,7 @@ def run(ctx: StageContext) -> StageReport:
                 status, usage, info = "failed", {}, f"{type(exc).__name__}: {exc}"
             if usage:
                 ctx.ledger.add(usage, stage="video", shot_label=shot.label)
-                report.money += float(usage.get("money") or 0)
+                report.add_usage(usage)
             if status == "done":
                 report.processed += 1
                 shot.video = info

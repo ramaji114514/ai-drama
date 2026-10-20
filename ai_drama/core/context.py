@@ -17,6 +17,20 @@ from .models import CostEntry, Episode, Run
 from .store import Store
 from ..providers.base import Bundle, BudgetExceeded, ProviderError
 
+#: 占位实现的 provider 名前缀。`registry` 里 dryrun 一律叫 `dryrun-<kind>`，
+#: stage06 认 `dryrun-lipsync` 也是同一套约定。
+SIMULATED_PREFIX = "dryrun"
+
+
+def is_simulated(provider: Any) -> bool:
+    """这次调用是**真扣费**还是**占位估算**。
+
+    dryrun provider 的价格表是编的：它写"假装这张图值 0.03 美元"，一分钱没出门。
+    不把两者分开，只产提示词的人会在账单上看到 $0.18 并以为被扣了钱 ——
+    而账单是这套工具唯一会让人紧张的数字，它不该说谎。
+    """
+    return str(provider or "").strip().startswith(SIMULATED_PREFIX)
+
 
 @dataclass
 class StageReport:
@@ -25,12 +39,30 @@ class StageReport:
     skipped: int = 0
     failed: int = 0
     money: float = 0.0
+    #: 上面那个 `money` 里**有多少是占位估算**（dryrun）。真扣费 = money - simulated。
+    simulated: float = 0.0
     notes: List[str] = field(default_factory=list)
     artifacts: Dict[str, str] = field(default_factory=dict)
     #: 质检阶段专用：pass / fail / unchecked。**unchecked 不算通过。**
     #: 放在 StageReport 上而不是只在 qc_report.json 里，是为了让
     #: "这次到底查成没查成"在每一层汇总里都不会被丢掉。
     qc_state: str = ""
+
+    def add_usage(self, usage: Dict[str, Any]) -> float:
+        """把一次 provider 调用的钱记到本阶段，并区分真扣费与占位估算。
+
+        阶段代码原来都是 `report.money += float(usage.get("money") or 0)`，
+        那行看不出这次是不是 dryrun。统一走这里，别处就不会漏。
+        """
+        money = float(usage.get("money") or 0.0)
+        return self.add_money(money, provider=usage.get("provider"))
+
+    def add_money(self, money: float, *, provider: Any = "") -> float:
+        money = float(money or 0.0)
+        self.money += money
+        if is_simulated(provider):
+            self.simulated += money
+        return money
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,6 +71,7 @@ class StageReport:
             "skipped": self.skipped,
             "failed": self.failed,
             "money": round(self.money, 6),
+            "simulated": round(self.simulated, 6),
             "notes": self.notes,
             "artifacts": self.artifacts,
             "qc_state": self.qc_state,
@@ -57,25 +90,37 @@ class Ledger:
         self.run_id = run_id
         self.budget_usd = float(budget_usd or 0.0)
         self.spent = 0.0
+        #: 其中有多少是占位估算。预算闸门**照样**算它，但报表要分开说 ——
+        #: 否则 dryrun 跑一遍就把预算额度吃掉了，看起来像真花了钱。
+        self.simulated = 0.0
 
     def add(self, usage: Dict[str, Any], *, stage: str = "", shot_label: str = "") -> None:
         money = float(usage.get("money") or 0.0)
+        provider = str(usage.get("provider") or "unknown")
+        simulated = is_simulated(provider)
         entry = CostEntry(
-            provider=str(usage.get("provider") or "unknown"),
+            provider=provider,
             stage=str(usage.get("stage") or stage or "unknown"),
             unit=str(usage.get("unit") or "call"),
             amount=float(usage.get("amount") or 0.0),
             money=money,
             run_id=self.run_id,
             shot_label=shot_label or str(usage.get("shot_label") or ""),
+            simulated=simulated,
         )
         self.store.add_cost(entry)
         self.spent += money
+        if simulated:
+            self.simulated += money
         if self.budget_usd > 0 and self.spent > self.budget_usd:
             raise BudgetExceeded(self.spent, self.budget_usd)
 
     def summary(self) -> Dict[str, Any]:
         return self.store.cost_summary(self.run_id)
+
+    def real_spent(self) -> float:
+        """真扣掉的钱 —— 预算报表和"这次花了多少"都该用它。"""
+        return round(self.spent - self.simulated, 6)
 
 
 @dataclass

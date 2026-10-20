@@ -393,7 +393,7 @@ def run(ctx: StageContext) -> StageReport:
             usage = ctx.bundle.t2i.png(ch.anchor_prompt, dest, size=ctx.frame_size,
                                        shot_label=f"portrait/{ch.name}")
             ctx.ledger.add(usage, stage="storyboard")
-            report.money += float(usage.get("money") or 0)
+            report.add_usage(usage)
             ch.ref_image = str(dest)
             if ctx.project is not None:
                 ctx.project.remember_portrait(ch.char_id or ch.name, str(dest))

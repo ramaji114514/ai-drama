@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 
 from ..core import paths
-from ..core.context import StageContext, StageReport
+from ..core.context import StageContext, StageReport, is_simulated
 from ..core.qc import Finding, QcChecker, QcRules, QcState, Severity, rules_path
 from ..core.models import CostEntry, Shot
 
@@ -147,13 +147,15 @@ def _vision_checks(ctx: StageContext, report: StageReport, qc: Any,
 
     if total_money:
         # 走和别处一样的账：provider 只报告花了多少，落盘由 store 统一做。
-        report.money += total_money
+        vision_name = getattr(vision, "name", "vision")
+        report.add_money(total_money, provider=vision_name)
         report.notes.append(f"画面校验花费 ${total_money:.4f}")
         try:
             ctx.store.add_cost(CostEntry(
                 run_id=ctx.run.run_id, stage="qc",
-                provider=getattr(vision, "name", "vision"),
+                provider=vision_name,
                 unit="call", amount=float(calls), money=total_money,
+                simulated=is_simulated(vision_name),
             ))
         except Exception as exc:                      # noqa: BLE001
             report.notes.append(f"[!] 画面校验的费用没记上：{type(exc).__name__}: {exc}")

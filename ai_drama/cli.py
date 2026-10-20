@@ -1042,17 +1042,31 @@ def cmd_skills(args: argparse.Namespace) -> int:
 def print_result(result: Dict[str, Any]) -> None:
     print("\n--- 阶段报告 ---")
     for rep in result.get("reports", []):
+        spend = f"花费 ${rep['money']:.4f}"
+        sim = float(rep.get("simulated") or 0.0)
+        if sim > 0:
+            # dryrun 的价是编的。不标出来，只产提示词的人会以为这一跑真花了钱。
+            spend += f"（其中 ${sim:.4f} 为占位估算）"
         print(
             f"  {rep['stage']:<11} 处理 {rep['processed']:<4} 跳过 {rep['skipped']:<4} "
-            f"失败 {rep['failed']:<3} 花费 ${rep['money']:.4f}"
+            f"失败 {rep['failed']:<3} {spend}"
         )
         for note in rep.get("notes", []):
             print(f"      - {note}")
     cost = result.get("cost") or {}
     if cost:
-        print(f"\n总计花费 ${cost.get('total_money', 0):.4f}")
+        real = float(cost.get("real_money") or 0.0)
+        sim = float(cost.get("simulated_money") or 0.0)
+        if sim > 0:
+            print(f"\n实际花费 ${real:.4f}（另有 ${sim:.4f} 为占位估算，没有真的扣费）")
+        else:
+            print(f"\n总计花费 ${real:.4f}")
     if result.get("final_video"):
         print(f"成片：{result['final_video']}")
+    elif not result.get("failed_stage"):
+        # 提示词模式：一个阶段都没失败，只是这次没请求出片。说清楚，
+        # 否则"没有成片"看着就像出了事。
+        print("本次没有跑出片阶段 —— 分镜和提示词到这儿就算做完了。")
 
 
 # ————————————————————————————————————————----
