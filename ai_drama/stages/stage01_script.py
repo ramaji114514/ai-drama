@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core import cast as castlib, paths
 from ..core.context import StageContext, StageReport
@@ -149,6 +149,24 @@ def run(ctx: StageContext) -> StageReport:
 
     payload = _parse(text)
     ep = _to_episode(ctx, payload)
+
+    # ———————————————— 补尾帧
+    # `end_action` 是尾帧提示词的唯一来源。缺了它，stage02 只能拿 action 顶替，
+    # 首尾两帧同文 —— 粘进图生图出来是同一张图，尾帧等于没有。
+    # 一次写十几镜时模型经常把这个字段漏掉（schema 里要求了也漏），
+    # 所以对漏掉的那几镜**再问一次**，只要它补这一段。
+    # 输出很短，比整段重写便宜得多，也不会把已经写好的分镜搅乱。
+    missing = [s for s in ep.shots if not (s.end_action or "").strip()]
+    if missing and ctx.bundle.text.name != "dryrun":
+        got, extra = _fill_end_actions(ctx, missing)
+        report.money += extra
+        if got:
+            report.notes.append(f"尾帧：模型漏了 end_action，补写了 {got}/{len(missing)} 镜")
+        left = len(missing) - got
+        if left:
+            report.notes.append(
+                f"尾帧：[!] 还有 {left} 镜补不上，那几镜的首尾两帧会是同一张图"
+            )
 
     # ———————————————— 与角色圣经合并
     # 在册角色的名字/外貌/定妆照**一律以圣经为准**，模型这一集写了什么都不算数。
@@ -297,6 +315,71 @@ def _cues(raw: Any) -> List[str]:
             continue
         kept.append(cue)
     return kept
+
+
+def _fill_end_actions(ctx: StageContext, shots: List[Shot]) -> Tuple[int, float]:
+    """让模型给缺 `end_action` 的镜头补上结束画面。返回 (补上了几镜, 花了多少钱)。
+
+    为什么值得单独一次调用：`end_action` 决定尾帧提示词，而尾帧是"续拍"的接口 ——
+    下一镜从首帧开始，接的就是上一镜的尾帧。它退化成 action 的复述，
+    整条链的第二半就断了，而且断得很安静（不报错，只是两帧一样）。
+
+    写不好的代价也只是"多花一次小调用"，比重新出一整集分镜便宜两个数量级。
+    """
+    lines = []
+    for sh in shots:
+        lines.append(f"- 场次 {sh.scene_id} · 第 {sh.order + 1} 镜（{sh.framing}）\n"
+                     f"  动作：{sh.action}\n"
+                     f"  台词：{sh.dialogue or '（无）'}")
+    prompt = f"""下面这些镜头缺「结束那一刻的画面」。逐镜补上。
+
+{chr(10).join(lines)}
+
+要求：
+- 只写这一镜**结束那一刻**的画面，纯视觉，不要写台词、音效、音乐、旁白
+- 必须和「动作」看得出差别：动作写"推开门走进来"，结束画面就写
+  "人已经站在柜台前，手还扶在门把上"
+- 只写和动作不同的那部分，不要把动作重抄一遍
+- 一句话，15-40 字
+
+只输出 JSON：
+{{"end_actions": [{{"scene_id": "sc01", "order": 0, "end_action": "……"}}]}}"""
+    try:
+        text, usage = ctx.bundle.text.generate(
+            prompt, system="短剧编剧引擎", scene="script-end_action",
+        )
+    except ProviderError as exc:
+        # 补不上不等于这一集报废 —— 报告里说不说清楚由调用方负责。
+        ctx.log(f"[script] 补尾帧调用失败：{exc}")
+        ctx.ledger.add({"provider": getattr(exc, "provider", "text") or "text",
+                        "stage": "script", "unit": "call", "amount": 0,
+                        "money": 0.0}, stage="script")
+        return 0, 0.0
+    ctx.ledger.add(usage, stage="script")
+    money = float(usage.get("money") or 0)
+
+    data = _parse(text)
+    rows = data.get("end_actions") or []
+    by_key: Dict[Tuple[str, int], str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        val = str(row.get("end_action") or "").strip()
+        if not val:
+            continue
+        try:
+            order = int(row.get("order", -1))
+        except (TypeError, ValueError):
+            continue
+        by_key[(str(row.get("scene_id") or ""), order)] = val
+
+    got = 0
+    for sh in shots:
+        val = by_key.get((sh.scene_id, sh.order))
+        if val:
+            sh.end_action = val
+            got += 1
+    return got, money
 
 
 def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:

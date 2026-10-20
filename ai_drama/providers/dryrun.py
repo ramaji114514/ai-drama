@@ -216,16 +216,18 @@ class DryRunTextProvider(TextProvider):
             shots: List[Dict[str, Any]] = []
             pool = self._scene_shots(si, hero_name, second[0], location, closers[si])
             for oi in range(shots_per_scene):
-                framing, action, line, on_screen, sfx = pool[oi % len(pool)]
+                framing, action, line, on_screen, sfx, end_action = pool[oi % len(pool)]
                 if oi >= len(pool):
                     # 要求的格数比模板多：复用景别但把动作标注成后续节拍，
                     # 避免出现"两镜一模一样的画面提示词"。
                     action = f"{action}（第 {oi + 1} 个节拍，机位与表演需与前镜区分）"
+                    end_action = f"{end_action}（延展到第 {oi + 1} 个节拍）"
                     sfx = []          # 复用节拍就别再复用音效 —— 同一集里"同一声音响两次"听着像 bug
                 shots.append({
                     "order": oi,
                     "framing": framing,
                     "action": action,
+                    "end_action": end_action,
                     "dialogue": line,
                     "sfx": list(sfx),
                     "characters": list(on_screen),
@@ -250,8 +252,8 @@ class DryRunTextProvider(TextProvider):
         }
 
     def _scene_shots(self, si: int, hero: str, other: str, location: str,
-                     closer: str) -> List[Tuple[str, str, str, List[str], List[str]]]:
-        """返回 (景别, 动作, 台词, **画面里看得见的角色**, **音效**)。
+                     closer: str) -> List[Tuple[str, str, str, List[str], List[str], str]]:
+        """返回 (景别, 动作, 台词, **画面里看得见的角色**, **音效**, **结束画面**)。
 
         第四个元素是 `characters` 字段 —— 骨架按它决定拿谁的定妆照锁脸。
         dryrun 是"零配置也能跑通"的参考实现，所以它要把**完整的契约**演出来，
@@ -262,35 +264,51 @@ class DryRunTextProvider(TextProvider):
         第五个元素是 `sfx` 音效（环境声与动作声，**不是**音乐 —— BGM 是
         全片一条，走单独的字段）。大部分镜头是空数组：每一条音效都是一次
         真实调用，参考实现不该为了"填满"而示范一种浪费的写法。
+
+        第六个元素是 `end_action` —— 这一镜**结束那一刻**的画面。它必须和
+        动作看得出差别，否则尾帧提示词就是首帧的复述，图生图出来是同一张图。
+        参考实现也得把这件事演对，不然「零配置跑通」跑出来的是个残缺的契约。
         """
         if si == 0:
             return [
                 ("establishing", f"{location}空镜，环境建立，光线偏暗", "", [],
-                 ["远处城市的低频嗡鸣"]),
-                ("medium", f"{hero}独自停留，动作细微，像在确认什么", "", [hero], []),
+                 ["远处城市的低频嗡鸣"],
+                 "光斑稳定下来，画面里依旧一个人都没有"),
+                ("medium", f"{hero}独自停留，动作细微，像在确认什么", "", [hero], [],
+                 f"{hero}停在原地，视线落在门上那一道被撬过的痕"),
                 ("close", f"{hero}的视线突然定住，瞳孔收缩", f"{hero}：（低声）不对。",
-                 [hero], ["心跳声，一下比一下重"]),
-                ("extreme_close", closer, "", [hero], []),
+                 [hero], ["心跳声，一下比一下重"],
+                 "瞳孔缩到最小，嘴唇抿成一条线，手里的钥匙不再晃"),
+                ("extreme_close", closer, "", [hero], [],
+                 "细节填满画面，所有动作停住，只剩一点反光还在动"),
             ]
         if si == 1:
             return [
                 ("wide", f"{hero}与{other}隔着一张桌子对坐，空间关系紧张", "",
-                 [hero, other], ["椅子腿刮过地面"]),
+                 [hero, other], ["椅子腿刮过地面"],
+                 "两人都没动，桌上的杯子还冒着热气，谁也没先开口"),
                 ("medium", f"{other}低头回避视线，手指敲桌面", "", [other],
-                 ["手指敲桌面的轻响"]),
+                 ["手指敲桌面的轻响"],
+                 "手指停在桌面上，指节压得发白"),
                 ("close", f"{hero}前倾逼问，语气压得很低",
-                 f"{hero}：你到底在瞒我什么？", [hero], []),
+                 f"{hero}：你到底在瞒我什么？", [hero], [],
+                 "他逼近到半个身位的距离，呼吸几乎喷在对方脸上"),
                 ("medium", f"{other}终于抬头，表情松动",
-                 f"{other}：……知道的人，都走了。", [other], []),
+                 f"{other}：……知道的人，都走了。", [other], [],
+                 "抬起的头停在半空，眼神躲开又转回来"),
             ]
         return [
             ("wide", f"{location}，两人距离被骤然拉开，冷风灌进画面", "",
-             [hero, other], ["风灌进空旷空间的呼啸"]),
+             [hero, other], ["风灌进空旷空间的呼啸"],
+             "两人的影子被风吹得晃了一下，距离没有再拉近"),
             ("medium", f"{hero}后退半步，意识到危险逼近", "", [hero],
-             ["身后传来一声金属碰撞"]),
+             ["身后传来一声金属碰撞"],
+             "他退到墙边，后腰抵住冰凉的水泥"),
             ("close", f"{hero}做出决定的瞬间，呼吸稳定下来",
-             f"{hero}：那就从我开始。", [hero], []),
-            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", "", [], []),
+             f"{hero}：那就从我开始。", [hero], [],
+             "呼出的白气散开，眼神不再闪躲"),
+            ("establishing", f"镜头拉远，人影变小，环境吞没一切。{closer}", "", [], [],
+             "人影缩成一个黑点，环境把一切都吞掉"),
         ]
 
 
