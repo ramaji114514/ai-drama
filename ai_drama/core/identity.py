@@ -44,16 +44,21 @@ __all__ = [
     "NOT_INHERIT",
     "PASS_SCORE",
     "REFERENCE_HEAD",
+    "UNLOCKED_HEAD",
     "IdentityVerdict",
     "check_messages",
     "identity_retry_prompt",
     "parse_identity_verdict",
     "reference_block",
     "shot_identity_prompt",
+    "unlocked_block",
 ]
 
 #: 锁定段的开头。渲染层靠它判断"这段提示词是不是已经锁过了"。
 REFERENCE_HEAD = "【参考锁定】"
+
+#: "这个人没有参考图"的声明段开头。
+UNLOCKED_HEAD = "【无参考图】"
 
 #: 一致性分门槛。低于它判不合格。
 #: 7 分的含义（照抄校验提示词的定义）：10 = 同一个人同一装扮；
@@ -137,17 +142,46 @@ def reference_block(labels: Sequence[Tuple[str, str]]) -> str:
     )
 
 
-def shot_identity_prompt(prompt: str, labels: Sequence[Tuple[str, str]]) -> str:
+def unlocked_block(names: Sequence[str]) -> str:
+    """生成"这个人没有参考图"的声明段。
+
+    # 为什么必须有
+
+    provider 的 `max_ref_images` 常常只有 1 张。一镜里两个人同框时，
+    第二个人**照样在画面里**，但拿不到模特图。这时如果提示词什么都不说，
+    模型手上唯一的线索就是"要画一个有名字的人"，它会现造一张脸，
+    而且每个镜头造得都不一样 —— 成片里看起来像"人物漂移"，其实是
+    "你从来没告诉过它这个人长什么样"。
+
+    所以这里明写两件事：这个人**靠文字描述**生成，以及**不要把别人的脸
+    安给他**。后者是必要的，因为锁定段刚刚才把 `@图片1` 的脸按死，
+    而模型很容易把"必须一致"理解成"所有脸都一致"。
+    """
+    if not names:
+        return ""
+    who = "、".join(names)
+    return (
+        f"{UNLOCKED_HEAD}画面里还有 {who}：这次没有给 ta 的参考图，"
+        f"请严格按上文对 ta 的外貌描述生成，**不要**把 @图片1 的脸型、"
+        f"发型或服装安到 ta 身上，也不要让 ta 和 @图片1 长得像。"
+    )
+
+
+def shot_identity_prompt(
+    prompt: str, labels: Sequence[Tuple[str, str]], unlocked: Sequence[str] = ()
+) -> str:
     """把锁定段拼到镜头提示词**开头**。
 
     放开头不是排版偏好：参考项目的复盘里，把硬约束放在提示词尾部时
     模型会忽略它（"7 张主形象的脸没听这套"）。锁定段必须先进去。
     """
     block = reference_block(labels)
-    if not block:
+    extra = unlocked_block(unlocked)
+    head = "\n".join(x for x in (block, extra) if x)
+    if not head:
         return prompt
     body = (prompt or "").strip()
-    return f"{block}\n{body}" if body else block
+    return f"{head}\n{body}" if body else head
 
 
 def identity_retry_prompt(prompt: str, issues: Iterable[str]) -> str:

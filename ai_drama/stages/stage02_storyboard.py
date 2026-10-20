@@ -27,7 +27,7 @@ from typing import List, Optional
 from ..core import cast, paths
 from ..core.context import StageContext, StageReport
 from ..core.faces import matches_character
-from ..core.identity import shot_identity_prompt
+from ..core.identity import UNLOCKED_HEAD, shot_identity_prompt
 from ..core.media import estimate_shot_seconds
 from ..core.models import Character, Shot
 from ..providers.base import caps_of
@@ -232,10 +232,20 @@ def _join_parts(parts) -> str:
     return "，".join(p for p in (_tidy(x) for x in parts) if p)
 
 
-def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
+def unlocked_names(ep, shot: Shot, max_refs: int = 1) -> List[str]:
+    """出镜、但**拿不到**参考图的角色名 —— 提示词里要当成"文字描述出来的角色"。
+
+    provider 只吃 N 张参考图，第 N+1 个人照样站在画面里。不给模特图又不声明，
+    模型唯一的线索是"这里有个有名字的人"，它会现造一张脸，而且每个镜头造得
+    都不一样 —— 成片里看起来像人物漂移，其实是没告诉他这人长什么样。
+    """
+    found = [c for c in characters_in_shot(ep, shot) if c.ref_image]
+    return [c.name for c in found[max(0, max_refs):]]
+
+
+def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
     parts = [ep.style or ""]
-    ch = character_in_shot(ep, shot)
-    if ch:
+    for ch in characters_in_shot(ep, shot):
         parts.append(f"角色 {ch.name}：{ch.desc}")
     # 景别是"这一镜要怎么取景"，action 里往往已经写过了（"俯拍特写：……"）。
     # 两句都留，模型会以为要同时满足两个景别。
@@ -243,10 +253,10 @@ def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(shot.action)
     body = _join_parts(parts)
-    return shot_identity_prompt(body, labels)
+    return shot_identity_prompt(body, labels, unlocked)
 
 
-def compose_last_frame(ep, shot: Shot, labels=()) -> str:
+def compose_last_frame(ep, shot: Shot, labels=(), unlocked=()) -> str:
     """尾帧提示词 —— 这一镜**结束那一刻**的画面。
 
     与 compose_image_prompt 对称（同样的风格、角色锚点、景别），只把中间那句
@@ -256,14 +266,13 @@ def compose_last_frame(ep, shot: Shot, labels=()) -> str:
     """
     end = shot.end_action or shot.action
     parts = [ep.style or ""]
-    ch = character_in_shot(ep, shot)
-    if ch:
+    for ch in characters_in_shot(ep, shot):
         parts.append(f"角色 {ch.name}：{ch.desc}")
     if not _action_already_names_framing(end):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(end)
     body = _join_parts(parts)
-    return shot_identity_prompt(body, labels)
+    return shot_identity_prompt(body, labels, unlocked)
 
 
 def compose_video_prompt(shot: Shot) -> str:
@@ -432,9 +441,10 @@ def run(ctx: StageContext) -> StageReport:
         if len(characters_on_screen(ep, shot)) > max_refs:
             crowded += 1
         if not shot.image_prompt or ctx.force:
-            shot.image_prompt = compose_image_prompt(ep, shot, labels)
+            unlocked = unlocked_names(ep, shot, max_refs)
+            shot.image_prompt = compose_image_prompt(ep, shot, labels, unlocked)
             shot.video_prompt = compose_video_prompt(shot)
-            shot.last_frame = compose_last_frame(ep, shot, labels)
+            shot.last_frame = compose_last_frame(ep, shot, labels, unlocked)
             shot.negative_prompt = compose_negative_prompt(ep, shot)
             shot.video_negative = compose_video_negative(shot)
             changed += 1
@@ -498,7 +508,9 @@ def run(ctx: StageContext) -> StageReport:
     if crowded:
         report.notes.append(
             f"[!] {crowded} 个镜头出镜人数超过参考图上限（{max_refs}），"
-            "多出来的人锁不住脸 —— 拆成单人镜头，或换支持更多参考图的模型"
+            f"多出来的人锁不住脸。提示词里已写明「{UNLOCKED_HEAD}」那段："
+            "ta 靠文字描述生成、不许套用 @图片1 的长相。"
+            "要真正锁住脸，只能拆成单人镜头，或换支持更多参考图的模型"
         )
     # 尾帧退化成首帧的复述时必须说出来。不说的话，用户拿去做首尾帧工具，
     # 两端会是同一个画面 —— 那不是"效果差一点"，是这一镜根本没动。

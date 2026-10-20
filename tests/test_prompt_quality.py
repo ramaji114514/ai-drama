@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from ai_drama.core.identity import UNLOCKED_HEAD
 from ai_drama.core.models import Character, Episode, Scene, Shot
 from ai_drama.stages.stage02_storyboard import (
     FRAMING_PROMPT,
@@ -14,6 +15,7 @@ from ai_drama.stages.stage02_storyboard import (
     compose_negative_prompt,
     compose_video_negative,
     compose_video_prompt,
+    unlocked_names,
 )
 
 
@@ -134,3 +136,60 @@ def test_a_part_that_is_only_punctuation_is_dropped_not_joined():
     prompt = compose_image_prompt(ep, _shot("雨滴顺着玻璃滑落"))
     assert not prompt.startswith("，")
     assert "，，" not in prompt
+
+
+# ————————————————————————————————————————---- 第二个人没有参考图
+
+
+def _two_people():
+    ep = _ep([_char("林溪"), _char("周野")])
+    shot = _shot("林溪和周野面对面站着", characters=["林溪", "周野"])
+    return ep, shot
+
+
+def test_both_people_are_described_when_two_share_the_frame():
+    """只描述第一个人，第二个人在提示词里就只有一个名字。"""
+    ep, shot = _two_people()
+    prompt = compose_image_prompt(ep, shot, labels=[("角色", "林溪")], unlocked=["周野"])
+    assert "角色 林溪：林溪的外貌" in prompt
+    assert "角色 周野：周野的外貌" in prompt
+
+
+def test_the_person_without_a_reference_gets_an_explicit_note():
+    """没参考图又不声明，模型会现造一张脸，而且每镜造得都不一样。"""
+    ep, shot = _two_people()
+    prompt = compose_image_prompt(ep, shot, labels=[("角色", "林溪")], unlocked=["周野"])
+    assert UNLOCKED_HEAD in prompt
+    tail = prompt.split(UNLOCKED_HEAD, 1)[1]
+    assert "周野" in tail
+    assert "@图片1" in tail, "得说清不要把别人的脸安给他"
+
+
+def test_the_lock_segment_still_names_exactly_one_picture():
+    """声明了两个人不等于能传两张图 —— 多写的 @图片2 模型会当成真的。"""
+    ep, shot = _two_people()
+    prompt = compose_image_prompt(ep, shot, labels=[("角色", "林溪")], unlocked=["周野"])
+    assert "@图片1 = 角色「林溪」" in prompt
+    assert "@图片2" not in prompt
+
+
+def test_a_single_person_shot_has_no_unlocked_note():
+    ep = _ep([_char("林溪")])
+    prompt = compose_image_prompt(
+        ep, _shot("林溪推开门", characters=["林溪"]), labels=[("角色", "林溪")]
+    )
+    assert UNLOCKED_HEAD not in prompt
+
+
+def test_unlocked_names_stops_at_the_reference_cap():
+    ep, shot = _two_people()
+    assert unlocked_names(ep, shot, max_refs=1) == ["周野"]
+    assert unlocked_names(ep, shot, max_refs=2) == []
+
+
+def test_the_last_frame_also_declares_the_unlocked_person():
+    ep, shot = _two_people()
+    shot.end_action = "两个人都不再说话，隔着桌子对看"
+    prompt = compose_last_frame(ep, shot, labels=[("角色", "林溪")], unlocked=["周野"])
+    assert UNLOCKED_HEAD in prompt
+    assert "隔着桌子对看" in prompt
