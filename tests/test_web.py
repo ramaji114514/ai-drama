@@ -461,6 +461,20 @@ def test_the_whole_episode_of_prompts_can_be_taken_in_one_click():
     assert ".pbar" in css, "导出按钮会贴在内容上"
 
 
+def test_the_cost_page_never_lets_fake_money_pass_for_real_money():
+    """页面上的钱必须分得清真假，否则 run 列表和成本页都在说假话。
+
+    dryrun 的价是编的，一分钱没出门。混成一个数念，只产提示词的用户会
+    以为被扣了钱 —— 而账单是这套工具里唯一会让人紧张的数字。
+    """
+    page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "function moneyLabel" in page, "run 列表还在直接念 total"
+    assert "simulated_money" in page and "real_money" in page
+    assert "虚拟" in page, "占位估算没有标出来"
+    assert "by_stage_simulated" in page and "by_provider_simulated" in page
+    assert "没有真的扣费" in page, "总计行没解释那笔钱是编的"
+
+
 @pytest.mark.ffmpeg
 def test_the_whole_page_survives_a_real_run(workspace: Path, need_ffmpeg: None):
     """端到端把每个 API 都打一遍：一个 500 都不许有。"""
