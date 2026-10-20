@@ -800,7 +800,43 @@ AI_DRAMA_SUBTITLE_FONT=...    # 烧字幕用哪个字体（写字体名，不是
 AI_DRAMA_DB=...               # SQLite 落在哪
 ```
 
-### 已经接好的一家：阿里云百炼（DashScope）
+### 现在只需要一家：DeepSeek（写剧本）
+
+项目现在只产提示词，**唯一会调模型的地方就是"把一句话写成剧本和分镜"**。
+那件事由 `ai_drama/providers/deepseek.py` 负责，一家、一种形态、一次请求一次返回：
+
+```bash
+# .env
+AI_DRAMA_DEEPSEEK_API_KEY=sk-...
+AI_DRAMA_TEXT=deepseek
+```
+
+就这两行。其余形态（出图/配音/视频）不用配，它们的默认值仍然是 dryrun ——
+**不会因为你没配 key 而偷偷联网，也不会因为你配了 text 就顺手去调别家**。
+
+可选：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AI_DRAMA_DEEPSEEK_MODEL` | `deepseek-chat` | 换成 `deepseek-reasoner` 会先思考再写，分镜更稳但更慢更贵 |
+| `AI_DRAMA_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 走中转/自建代理时改这里 |
+| `AI_DRAMA_DEEPSEEK_PRICE_IN` | `0.00027` | 美元 / 1K 输入 token（**未命中缓存**） |
+| `AI_DRAMA_DEEPSEEK_PRICE_CACHE` | `0.00007` | 美元 / 1K 输入 token（**命中缓存**） |
+| `AI_DRAMA_DEEPSEEK_PRICE_OUT` | `0.0011` | 美元 / 1K 输出 token |
+
+它的标价本来就是美元，跟 `money` 同币种，所以**没有**百炼那套"元 ÷ 汇率"的折算：
+账单上的数字就是账本里的数字。缓存命中的那部分单独按便宜价算 —— 写整集时
+system 提示和角色圣经在每一镜里反复出现，命中率不低，全按未命中价算会把账记贵。
+
+`deepseek-reasoner` 有个专属失败模式值得知道：思考过程占满了 `max_tokens`，
+正文就是空的。这时候报错会直接说"把 `max_tokens` 调大"，而不是让你对着一个
+空剧本猜是哪一步坏了。
+
+### 也能出片的一家（现在用不上）：阿里云百炼（DashScope）
+
+项目已经不看这条链路了 —— 留着是因为它是"骨架能接住真厂商"的证明，
+而且想要成片的人还能用。一个名字 `dashscope` 覆盖七种形态，
+零第三方依赖，只用 stdlib 的 `urllib`。
 
 仓库里带了一个**完整可跑**的真厂商适配器 `ai_drama/providers/dashscope.py`
 （一个名字 `dashscope` 覆盖七种形态）——零第三方依赖，只用 stdlib 的 `urllib`。
@@ -808,7 +844,7 @@ AI_DRAMA_DB=...               # SQLite 落在哪
 ```bash
 # .env（不进版本库，.gitignore 里已经挡住了）
 AI_DRAMA_DASHSCOPE_API_KEY=sk-...
-AI_DRAMA_TEXT=dashscope       # qwen-plus
+AI_DRAMA_TEXT=dashscope       # 剧本（现在更推荐 deepseek，见上一节）
 AI_DRAMA_T2I=dashscope        # 定妆照   wanx2.1-t2i-turbo
 AI_DRAMA_IMAGE=dashscope      # 关键帧   wanx2.1-imageedit / wanx2.1-t2i-turbo
 AI_DRAMA_VIDEO=dashscope      # 片段     wanx2.1-i2v-turbo
