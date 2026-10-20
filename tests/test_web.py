@@ -434,6 +434,30 @@ def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
     assert ".pftext" in css and ".cp" in css, "样式没跟上，框会贴在边上"
 
 
+def test_the_whole_episode_of_prompts_can_be_taken_in_one_click():
+    """整集提示词要能一次拿走，而不是一镜一镜点复制。
+
+    为什么在乎这个：一集几十镜，每镜三段 —— 一个个点，做一集要点上百次，
+    还会漏掉最后一镜。导出走 Blob，不碰服务器：页面是只读的，这条不能破。
+    """
+    page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "function exportPrompts" in page
+    assert 'onclick="exportPrompts()"' in page, "导出按钮不见了"
+    # 纯前端下载：不能为了导出在服务端开一个写接口
+    assert "createObjectURL" in page and "a.download" in page
+    # 四段一段都不能少 —— 少一段就是导了个残的
+    assert "anchor_prompt" in page, "定妆照提示词没进导出"
+    for seg in ("【首帧】", "【尾帧】", "【运镜】"):
+        assert seg in page, f"导出文件里没有 {seg}"
+    # 文件名里的 / : * 在 Windows 上会让下载直接失败
+    assert '.replace(/[\\\\/:*?"<>|]/g' in page, "文件名没做非法字符替换"
+    # 不带 BOM 的 UTF-8，Windows 记事本打开是乱码
+    assert "\\ufeff" in page, "导出文件没带 BOM"
+
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert ".pbar" in css, "导出按钮会贴在内容上"
+
+
 @pytest.mark.ffmpeg
 def test_the_whole_page_survives_a_real_run(workspace: Path, need_ffmpeg: None):
     """端到端把每个 API 都打一遍：一个 500 都不许有。"""

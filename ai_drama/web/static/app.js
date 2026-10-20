@@ -271,9 +271,58 @@ function tabStoryboard(d) {
       <span class="dim">${esc(sc.location || '')} ${esc(sc.time_of_day || '')}</span>
       <span class="dim">${sc.shots.length} 镜</span></div>
     <div class="shots">${sc.shots.map(shotCard).join('')}</div></div>`).join('');
-  return cast + scenes +
+  const bar = `<div class="pbar">
+      <button class="cp" onclick="exportPrompts()">导出全部提示词</button>
+      <span class="dim">整集的定妆照 + 每镜首帧/尾帧/运镜，一键存成 .txt</span>
+    </div>`;
+  return bar + cast + scenes +
     `<p class="hint">总时长 ${fmtSec(sb.seconds)} · 结构来自
      <code>episode.json</code>（可以手改，改完 <code>resume --stages frames</code>）。</p>`;
+}
+
+/* 一键把整集的提示词导成一份纯文本：定妆照 + 每一镜的首帧/尾帧/运镜。
+   走 Blob + <a download>，不碰服务器（页面是只读的），也不需要任何依赖。
+   为什么要它：四条提示词一个个点复制，做一集得点几十次，还容易漏掉最后那镜。 */
+function exportPrompts() {
+  const sb = (state.data || {}).storyboard;
+  if (!sb) return;
+  const out = [];
+  const line = (s) => out.push(s == null ? '' : String(s));
+  line(`# ${sb.title || '未命名'} — 提示词`);
+  if (sb.style) line(`\n风格：${sb.style}`);
+  if ((sb.characters || []).length) {
+    line('\n## 角色定妆照');
+    sb.characters.forEach((c) => {
+      line(`\n### ${c.name}${c.desc ? '（' + c.desc + '）' : ''}`);
+      line(c.anchor_prompt || '（这一集没有定妆照提示词）');
+    });
+  }
+  (sb.scenes || []).forEach((sc) => {
+    line('\n## ' + [sc.scene_id, sc.title, sc.location, sc.time_of_day]
+      .filter(Boolean).join(' · '));
+    (sc.shots || []).forEach((sh, i) => {
+      const bits = [sh.label || `第 ${i + 1} 镜`, fmtSec(sh.duration)];
+      if (sh.framing) bits.push(sh.framing);
+      if ((sh.characters || []).length) bits.push('出镜 ' + sh.characters.join('、'));
+      line('\n### ' + bits.filter(Boolean).join(' · '));
+      if (sh.dialogue) line(`台词：${sh.dialogue}`);
+      if (sh.image_prompt) line(`\n【首帧】\n${sh.image_prompt}`);
+      if (sh.last_frame) line(`\n【尾帧】\n${sh.last_frame}`);
+      if (sh.video_prompt) line(`\n【运镜】\n${sh.video_prompt}`);
+    });
+  });
+  const text = out.join('\n') + '\n';
+  const name = `${sb.title || 'prompts'}-提示词.txt`.replace(/[\\/:*?"<>|]/g, '_');
+  // 带 BOM：Windows 记事本能认出来，Excel 直接打开也不会全是乱码。
+  const blob = new Blob(['\ufeff' + text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 /* 提示词框：定妆照在角色卡上，首帧/尾帧/运镜在每一镜上，同一套渲染。

@@ -158,3 +158,4 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
   font-size: 12px; line-height: 1.6; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--line); background: rgba(255,255,255,.02); color: var(--fg); }
 .pftext:focus { outline: none; border-color: var(--dim); background: rgba(255,255,255,.04); }
+.pbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
