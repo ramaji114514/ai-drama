@@ -261,6 +261,8 @@ function tabStoryboard(d) {
           <div style="margin-top:8px">${c.portrait && c.portrait.exists
             ? `<img src="${mediaURL(c.portrait)}" style="width:64px;border-radius:4px">`
             : '<span class="miss">定妆照不在</span>'}</div>
+          ${promptBox(c.anchor_prompt
+            ? [['定妆照', c.anchor_prompt, '拿去做「角色参考图」']] : [])}
         </div>`).join('')}</div></div>`
     : '';
   const scenes = sb.scenes.map((sc) => `<div class="scene">
@@ -274,12 +276,11 @@ function tabStoryboard(d) {
      <code>episode.json</code>（可以手改，改完 <code>resume --stages frames</code>）。</p>`;
 }
 
-function promptBox(sh) {
-  const fields = [
-    ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
-    ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
-    ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
-  ].filter(([, v]) => v);
+/* 提示词框：定妆照在角色卡上，首帧/尾帧/运镜在每一镜上，同一套渲染。
+   这里的 textarea 只是「方便先改再复制」的草稿 —— 页面是只读的，改的东西
+   不落盘。要真改就动 episode.json 再 resume（见页面底部那行提示）。 */
+function promptBox(fields) {
+  fields = (fields || []).filter(([, v]) => v);
   if (!fields.length) return '';
   const inner = fields.map(([name, value, hint], i) => `
     <div class="pf">
@@ -288,7 +289,15 @@ function promptBox(sh) {
       <textarea class="pftext" rows="${Math.min(8, Math.max(3,
         Math.ceil((value || '').length / 46)))}">${esc(value)}</textarea>
     </div>`).join('');
-  return `<details class="prompts"><summary>提示词（${fields.length} 段，可直接改、可一键复制）</summary>${inner}</details>`;
+  return `<details class="prompts"><summary>提示词（${fields.length} 段，可一键复制）</summary>${inner}</details>`;
+}
+
+function shotPrompts(sh) {
+  return promptBox([
+    ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
+    ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
+    ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
+  ]);
 }
 
 function copyField(btn) {
@@ -320,7 +329,7 @@ function shotCard(sh) {
       ${sh.action ? `<p class="act">${esc(sh.action)}</p>` : ''}
       ${sh.end_action ? `<p class="act dim">结束画面：${esc(sh.end_action)}</p>` : ''}
       ${sh.dialogue ? `<p class="dlg">${esc(sh.dialogue)}</p>` : ''}
-      ${promptBox(sh)}
+      ${shotPrompts(sh)}
       ${sfx ? `<div class="sfx">音效：${sfx}</div>` : ''}
       ${sh.characters && sh.characters.length
         ? `<div class="sfx">出镜：${esc(sh.characters.join('、'))}</div>`
