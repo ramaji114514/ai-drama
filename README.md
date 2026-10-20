@@ -155,12 +155,17 @@ python run.py web                     # 只读网页：分镜 / 时间轴 / 质�
 
 ```bash
 python run.py run "一句话" \
-  --scenes 2 --shots 1 \            # 场次数、每场镜头数
-  --aspect 9:16 \                   # 画幅
-  --stages script,storyboard \      # 只跑这几步
-  --budget 1.5 \                    # 预算上限（美元），超了当场停
-  --force                           # 忽略缓存全部重跑
+  --scenes 2 --shots 1 \
+  --aspect 9:16 \
+  --stages script,storyboard \
+  --budget 1.5
 ```
+
+* `--scenes` / `--shots`：几场、每场几镜
+* `--aspect`：`9:16` 竖屏（默认）/ `16:9` / `1:1` / `4:5`
+* `--stages`：只跑这几步；只拿提示词就写 `script,storyboard,frames`
+* `--budget`：预算上限（美元），超了当场停
+* `--force`：忽略缓存全部重跑
 
 ---
 
