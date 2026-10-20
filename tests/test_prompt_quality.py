@@ -103,3 +103,34 @@ def test_even_a_sub_second_shot_gets_a_pace():
     prompt = compose_video_prompt(_shot("林晚推开门", duration=0.4))
     assert "匀速完成" in prompt
     assert "0 秒" not in prompt
+
+
+# ————————————————————————————————————————---- 拼接不留双标点
+
+
+def test_a_style_that_ends_with_a_full_stop_does_not_leave_a_double_punctuation():
+    """真实输出里出现过 "……猫的凝视。，角色 灰灰：……"。
+
+    模型写的 style 大多自带句号，而拼接处加的是逗号。图生图不会为标点报错，
+    它只会把这一坨当成要画的内容 —— 白占注意力，还显得这工具不讲究。
+    """
+    ep = Episode(run_id="r", idea="x", style="冷蓝与暖橙对比色调，雨夜潮湿质感。",
+                 characters=[], scenes=[])
+    prompt = compose_image_prompt(ep, _shot("灰猫端坐在窗台正中。"))
+    assert "。，" not in prompt
+    assert "。。" not in prompt
+    assert "雨夜潮湿质感，中景，人物腰部以上，灰猫端坐" in prompt
+
+
+def test_the_video_prompt_does_not_double_its_full_stop():
+    prompt = compose_video_prompt(_shot("林溪弯腰凑近猫，眉头微皱。", duration=15.0))
+    assert "。。" not in prompt
+    assert prompt.startswith("林溪弯腰凑近猫，眉头微皱。轻微手持跟随")
+
+
+def test_a_part_that_is_only_punctuation_is_dropped_not_joined():
+    """模型偶尔把整段写成"…"或"。"，拼进去就是一个没有内容的逗号。"""
+    ep = Episode(run_id="r", idea="x", style="。", characters=[], scenes=[])
+    prompt = compose_image_prompt(ep, _shot("雨滴顺着玻璃滑落"))
+    assert not prompt.startswith("，")
+    assert "，，" not in prompt

@@ -211,6 +211,27 @@ def reference_labels(ep, shot: Shot, max_refs: int = 1) -> List:
     return [("角色", c.name) for c in found[:max(0, max_refs)]]
 
 
+#: 拼接前要先剥掉的句尾标点。**这是真实输出里暴露出来的问题**：
+#: 模型写的 style/action 大多自带句号，直接 `"，".join(...)` 会拼出
+#: "……强调窗框与猫的凝视。，角色 灰灰：……" 这种双标点。图生图模型
+#: 不会为标点报错，它只会把这一坨当成要画的内容去理解 —— 画面里没人在意
+#: 逗号，但"句号+逗号"这种异常输入会白占注意力。所以先剥、后统一补。
+_TAIL_PUNCT = "。．.，,、；;：:！!？?… \t\r\n"
+
+
+def _tidy(text: str) -> str:
+    """去掉首尾空白与句尾标点，留给拼接处统一收口。"""
+    return (text or "").strip().rstrip(_TAIL_PUNCT).strip()
+
+
+def _join_parts(parts) -> str:
+    """用中文逗号把若干段接成一句，剥掉每段自带的句尾标点。
+
+    空段（模型没给 style、没有角色锚点）直接丢掉，免得拼出"，特写，……"。
+    """
+    return "，".join(p for p in (_tidy(x) for x in parts) if p)
+
+
 def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
     parts = [ep.style or ""]
     ch = character_in_shot(ep, shot)
@@ -221,7 +242,7 @@ def compose_image_prompt(ep, shot: Shot, labels=()) -> str:
     if not _action_already_names_framing(shot.action):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(shot.action)
-    body = "，".join(p for p in parts if p)
+    body = _join_parts(parts)
     return shot_identity_prompt(body, labels)
 
 
@@ -241,7 +262,7 @@ def compose_last_frame(ep, shot: Shot, labels=()) -> str:
     if not _action_already_names_framing(end):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(end)
-    body = "，".join(p for p in parts if p)
+    body = _join_parts(parts)
     return shot_identity_prompt(body, labels)
 
 
@@ -266,7 +287,7 @@ def compose_video_prompt(shot: Shot) -> str:
         pace = f"{seconds:.0f} 秒内匀速完成，不加速也不放慢"
     else:
         pace = "匀速完成，不加速也不放慢"
-    return f"{shot.action}。{move}，{pace}。"
+    return f"{_tidy(shot.action)}。{move}，{pace}。"
 
 
 def _dryrun_portrait_feeding_a_real_model(ctx: StageContext, portraits_in_play: int) -> bool:
