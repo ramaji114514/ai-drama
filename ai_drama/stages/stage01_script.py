@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core import cast as castlib, paths
 from ..core.context import StageContext, StageReport
-from ..core.media import estimate_shot_seconds
+from ..core.media import estimate_shot_seconds, preferred_shot_seconds
 from ..core.models import Character, Episode, Scene, Shot
 from ..providers.base import ProviderError
 
@@ -102,6 +102,21 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
 - 最后一个镜头必须留悬念（短剧的钩子）。"""
 
 
+#: 生成完一集之后要写回 `ctx.episode` 的字段。
+#:
+#: 为什么列成一张表而不是随手写五六行 setattr：`Episode` 加字段时，
+#: 忘的**恰恰是这里** —— 少写一行不会报错，只会在下游静静读到旧值
+#: （target_seconds 就这么漏过一次）。tests/test_target_duration.py 里
+#: 有一条用例拿 dataclass 字段对着这张表验一遍，漏了当场红。
+ADOPTED_FIELDS = ("title", "logline", "style", "characters", "scenes",
+                  "target_seconds")
+
+
+def _adopt(ctx: StageContext, ep: Episode) -> None:
+    for name in ADOPTED_FIELDS:
+        setattr(ctx.episode, name, getattr(ep, name))
+
+
 def run(ctx: StageContext) -> StageReport:
     report = StageReport(stage="script")
     ep_json = paths.episode_json(ctx.root, ctx.run.run_id)
@@ -110,11 +125,7 @@ def run(ctx: StageContext) -> StageReport:
         # 已完成过：直接读回来，保证幂等重跑不会浪费一次 LLM 调用
         data = json.loads(ep_json.read_text(encoding="utf-8"))
         loaded = Episode.from_dict(data)
-        ctx.episode.characters = loaded.characters
-        ctx.episode.scenes = loaded.scenes
-        ctx.episode.title = loaded.title
-        ctx.episode.logline = loaded.logline
-        ctx.episode.style = loaded.style
+        _adopt(ctx, loaded)
         ctx.store.save_episode(ctx.episode)
         ctx.store.sync_shots(ctx.run.run_id, ctx.episode)
         report.skipped = len(ctx.episode.shots)
@@ -211,11 +222,7 @@ def run(ctx: StageContext) -> StageReport:
     )
 
     # 把解析好的结果回写到 ctx.episode，供本进程内后续阶段直接使用
-    ctx.episode.title = ep.title
-    ctx.episode.logline = ep.logline
-    ctx.episode.style = ep.style
-    ctx.episode.characters = ep.characters
-    ctx.episode.scenes = ep.scenes
+    _adopt(ctx, ep)
 
     report.processed = len(ep.shots)
     report.notes.append(f"{len(ep.scenes)} 场 / {len(ep.shots)} 镜 / 角色 {len(ep.characters)} 个")
@@ -451,10 +458,17 @@ def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
                 characters=_cast_of(sh),
                 sfx=_cues(sh.get("sfx")),
             )
-            shot.duration = estimate_shot_seconds(shot)
             scene.shots.append(shot)
         if scene.shots:
             ep.scenes.append(scene)
+
+    # 时长在**所有镜头都在场**之后统一算：整部目标的均摊要除以总镜数，
+    # 边parse边算会拿到"此刻已知的镜数"，前几镜被摊得比后几镜长。
+    ep.target_seconds = float(ctx.run.meta.get("target_seconds") or 0.0)
+    for sc in ep.scenes:
+        for shot in sc.shots:
+            shot.duration = estimate_shot_seconds(
+                shot, preferred_s=preferred_shot_seconds(ep))
 
     if not ep.scenes:
         raise ProviderError(

@@ -249,6 +249,10 @@ class Episode:
     characters: List[Character] = field(default_factory=list)
     scenes: List[Scene] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
+    #: 整部目标时长（秒）。0 = 没定目标，每镜按 default_shot_seconds 走。
+    #: 存进 episode 而不是只放 run.meta，是因为它要跟着这一集走：
+    #: 换了机器、resume 到 storyboard，都还得知道"这一集原本要多长"。
+    target_seconds: float = 0.0
 
     @property
     def shots(self) -> List[Shot]:
@@ -283,6 +287,7 @@ class Episode:
             "style": self.style,
             "created_at": self.created_at,
             "total_duration": self.total_duration,
+            "target_seconds": self.target_seconds,
             "characters": [c.to_dict() for c in self.characters],
             "scenes": [s.to_dict() for s in self.scenes],
         }
@@ -296,6 +301,7 @@ class Episode:
             logline=d.get("logline", ""),
             style=d.get("style", ""),
             created_at=d.get("created_at", now_iso()),
+            target_seconds=float(d.get("target_seconds") or 0.0),
             characters=[Character.from_dict(c) for c in d.get("characters", [])],
             scenes=[Scene.from_dict(s) for s in d.get("scenes", [])],
         )

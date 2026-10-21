@@ -297,8 +297,14 @@ function tabStoryboard(d) {
         <span class="dim">${esc((dialectOf(state.dialect) || {}).tip || '')}</span>` : ''}
       <span class="dim">整集的定妆照 + 每镜首帧/尾帧/运镜，一键存成 .txt</span>
     </div>`;
+  // 定过目标就把"目标/实际"并排写出来：只显示总时长，用户没法判断差多少
+  const goal = sb.target_seconds > 0
+    ? `目标 ${fmtSec(sb.target_seconds)} · 实际 ${fmtSec(sb.seconds)}`
+      + `（${sb.seconds >= sb.target_seconds ? '多' : '少'} `
+      + `${Math.abs(sb.seconds - sb.target_seconds).toFixed(1)}s）`
+    : `总时长 ${fmtSec(sb.seconds)}`;
   return bar + cast + scenes +
-    `<p class="hint">总时长 ${fmtSec(sb.seconds)} · 结构来自
+    `<p class="hint">${goal} · 结构来自
      <code>episode.json</code>（可以手改，改完 <code>resume --stages frames</code>）。</p>`;
 }
 

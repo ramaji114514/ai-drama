@@ -16,7 +16,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import Shot
 
@@ -422,6 +422,29 @@ def default_shot_seconds() -> float:
     except ValueError:
         return DEFAULT_SHOT_SECONDS
     return value if value > 0 else DEFAULT_SHOT_SECONDS
+
+
+def preferred_shot_seconds(ep: Any) -> float:
+    """这一集里，每个镜头**希望**多长。
+
+    有两种来源，优先级不同：
+
+    * 定了整部目标（``episode.target_seconds``）→ 目标 ÷ 镜数，均摊。
+    * 没定目标 → ``default_shot_seconds()``（15 秒，可用环境变量改）。
+
+    均摊是**刻意的钝选择**：它可计算、可解释、可复现。让模型"按 60 秒自己
+    决定每镜多长"听起来更聪明，但同样的剧本两次跑出两个片长，而且没法告诉
+    用户为什么这镜 9 秒那镜 22 秒。真要调节奏，调镜数（`--scenes/--shots`）
+    比调模型靠谱。
+
+    注意这只是**愿望**：台词读不完时，`estimate_shot_seconds` 会突破它
+    （台词是硬下限）。所以整部实际时长可能超过目标 —— stage02 会如实报差值。
+    """
+    target = float(getattr(ep, "target_seconds", 0.0) or 0.0)
+    shots = list(getattr(ep, "shots", []) or [])
+    if target > 0 and shots:
+        return round(target / len(shots), 3)
+    return default_shot_seconds()
 
 
 def estimate_shot_seconds(shot: Shot, *, cps: float = 4.5, min_s: float = 2.0,

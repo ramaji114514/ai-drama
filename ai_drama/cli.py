@@ -251,12 +251,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         only_shots=tuple(getattr(args, "only_shot", None) or ()),
     )
     stages = args.stages.split(",") if args.stages else None
+    target = float(getattr(args, "target", 0.0) or 0.0)
+    if target < 0:
+        print("--target 不能是负数（0 表示不定目标）")
+        return 2
     run = pipe.start(
         args.idea,
         style=args.style or "",
         scenes=args.scenes,
         shots_per_scene=args.shots,
         voice=args.voice,
+        target_seconds=target,
     )
     print(f"run_id = {run.run_id}")
     print(f"out    = {run.out_dir}")
@@ -1124,8 +1129,11 @@ def print_result(result: Dict[str, Any]) -> None:
             print(f"\n实际花费 ${real:.4f}（另有 ${sim:.4f} 为占位估算，没有真的扣费）")
         else:
             print(f"\n总计花费 ${real:.4f}")
-    if result.get("final_video"):
-        print(f"成片：{result['final_video']}")
+    final = result.get("final_video")
+    # 路径是 Pipeline 里的"预期位置"，不保证文件真在 —— 只跑了
+    # script+storyboard 时它照样存在这个字段。打印一个不存在的文件比不打印更糟。
+    if final and Path(final).exists():
+        print(f"成片：{final}")
     elif not result.get("failed_stage"):
         # 提示词模式：一个阶段都没失败，只是这次没请求出片。说清楚，
         # 否则"没有成片"看着就像出了事。
@@ -1198,6 +1206,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scenes", type=int, default=3, help="场次数（默认 3）")
     sp.add_argument("--shots", type=int, default=4, help="每场镜头数（默认 4）")
     sp.add_argument("--voice", default="female_01", help="配音音色")
+    sp.add_argument("--target", type=float, default=0.0, metavar="SECONDS",
+                    help="整部目标时长（秒），均摊到每个镜头。例：--target 60。"
+                         "台词读不完的镜头会突破上限并在报告里写出差值")
     sp.add_argument("--project", default="", metavar="PROJECT_ID",
                     help="归到某部剧下：角色与定妆照跨集复用（见 project new）")
     sp.add_argument("--stages", help=f"只跑指定阶段，逗号分隔：{','.join(STAGES)}")

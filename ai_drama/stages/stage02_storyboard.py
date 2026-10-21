@@ -28,7 +28,7 @@ from ..core import cast, paths
 from ..core.context import StageContext, StageReport
 from ..core.faces import matches_character
 from ..core.identity import UNLOCKED_HEAD, shot_identity_prompt
-from ..core.media import estimate_shot_seconds
+from ..core.media import estimate_shot_seconds, preferred_shot_seconds
 from ..core.models import Character, Shot
 from ..providers.base import caps_of
 
@@ -452,6 +452,7 @@ def run(ctx: StageContext) -> StageReport:
     by_name = 0                  # 声明里靠名字/别名认出来的引用数（降级，要报）
     unknown: List[str] = []      # 声明了但不在卡司里的引用
     ambiguous: List[str] = []    # 声明了对上多个角色的引用（同名不同人）
+    preferred = preferred_shot_seconds(ep)
     for shot in ep.shots:
         labels = reference_labels(ep, shot, max_refs)
         if labels:
@@ -481,8 +482,9 @@ def run(ctx: StageContext) -> StageReport:
             shot.negative_prompt = compose_negative_prompt(ep, shot)
             shot.video_negative = compose_video_negative(shot)
             changed += 1
-        # 时长统一在这里复核：模型给的值不可信，公式给的值才可复现
-        refined = estimate_shot_seconds(shot)
+        # 时长统一在这里复核：模型给的值不可信，公式给的值才可复现。
+        # preferred 跟着整部目标走（均摊到每镜），没定目标就是默认片长。
+        refined = estimate_shot_seconds(shot, preferred_s=preferred)
         if abs(refined - shot.duration) > 0.01:
             shot.duration = refined
             changed += 1
@@ -495,11 +497,31 @@ def run(ctx: StageContext) -> StageReport:
     report.processed = changed
     report.artifacts["episode"] = str(ep_json)
     head = f"定稿 {len(ep.shots)} 镜 / 总时长 {ep.total_duration}s / 定妆照 {portraits} 张"
+    if ep.target_seconds > 0:
+        gap = ep.total_duration - ep.target_seconds
+        # 说清差在哪：均摊是愿望，台词是硬下限（读不完的话不能剪掉一半）
+        if abs(gap) < 0.05:
+            head += f"（目标 {ep.target_seconds:g}s，正好）"
+        else:
+            head += (f"（目标 {ep.target_seconds:g}s，"
+                     f"{'多' if gap > 0 else '少'} {abs(gap):.1f}s）")
     if reused:
         head += f"（另有 {reused} 张沿用项目里的，未重复生成）"
     lock = f"参考锁定 {locked}/{len(ep.shots)} 镜（provider 单镜最多 {max_refs} 张参考图）"
     report.notes.append(head)
     report.notes.append(lock)
+    if ep.target_seconds > 0 and preferred < 2.0:
+        report.notes.append(
+            f"[!] 目标 {ep.target_seconds:g}s ÷ {len(ep.shots)} 镜 = {preferred:.2f} 秒/镜，"
+            "低于 2 秒下限 —— 再短的镜头说话都来不及。实际会明显超过目标。"
+            "要么减镜数（--scenes/--shots），要么把目标调大。"
+        )
+    if ep.target_seconds > 0 and ep.total_duration > ep.target_seconds * 1.2 + 0.5:
+        report.notes.append(
+            f"[!] 实际 {ep.total_duration}s 超目标 {ep.target_seconds:g}s 约 "
+            f"{(ep.total_duration - ep.target_seconds) / ep.target_seconds:.0%}："
+            "台词长度是硬下限，超出来的部分只能靠删台词或减镜头消化。"
+        )
     if _dryrun_portrait_feeding_a_real_model(ctx, portraits + reused):
         # 这条不是"配置不全"的提醒，是一条**会花钱的错误**：
         # 占位定妆照是个写着提示词的卡片，真图像模型会老老实实把那张卡片当底图去改，

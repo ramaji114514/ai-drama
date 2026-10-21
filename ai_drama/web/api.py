@@ -275,6 +275,8 @@ def storyboard_payload(root: Path, store: Any, run_id: str, ep: Any) -> Dict[str
         "scenes": scenes,
         "shots_total": sum(len(s["shots"]) for s in scenes),
         "seconds": round(float(ep.total_duration or 0.0), 3),
+        # 整部目标：0 表示没定。页面拿它和 seconds 比，显示"目标/实际"。
+        "target_seconds": round(float(getattr(ep, "target_seconds", 0.0) or 0.0), 3),
     }
 
 
