@@ -81,6 +81,40 @@ def _concat_mp4(clips: List[Path], out: Path, work: Path) -> Path:
     return media.concat_clips(clips, out, work_dir=work)
 
 
+def _scene_is_stale(out: Path, clips: List[Path], durations: List[float],
+                    *, tolerance: float = 0.25) -> bool:
+    """这一场的成片还能不能直接复用。
+
+    只判断"文件在不在"是不够的，这正是之前放过的一个真 bug：
+    重渲一个镜头之后 `resume --stages concat`，时间轴是按**这批新片段**
+    重新量的，画面却还是旧成片 —— 画面旧、字幕新，整场 A/V 错位，
+    而 QC 只查文件存在，一路判 done。
+
+    所以这里比两件事：
+    - 有没有素材比成片新（重渲过的片段 mtime 必然更晚）；
+    - 成片实际长度和这批片段的实测时长之和差得远不远。
+    """
+    if not out.exists():
+        return True
+    try:
+        built_at = out.stat().st_mtime
+    except OSError:
+        return True
+    for clip in clips:
+        try:
+            if clip.stat().st_mtime > built_at:
+                return True
+        except OSError:
+            return True
+    want = sum(durations)
+    got = probe_duration(out)
+    if got is None:
+        return True
+    if want <= 0:
+        return False
+    return abs(got - want) > tolerance
+
+
 def run(ctx: StageContext) -> StageReport:
     report = StageReport(stage="concat")
     ep = ctx.episode
@@ -124,10 +158,18 @@ def run(ctx: StageContext) -> StageReport:
             continue
 
         out = paths.scene_video(ctx.root, ctx.run.run_id, scene.scene_id)
-        reused = out.exists() and not ctx.force
+        stale = _scene_is_stale(out, clips, durations)
+        reused = out.exists() and not ctx.force and not stale
         if reused:
             report.skipped += 1
         else:
+            if stale and out.exists():
+                # 复用错的东西比重新拼更贵：时间轴会按**新片段**算，
+                # 画面却还是旧的，字幕和台词整体飘掉，而且 QC 看不出来。
+                report.notes.append(
+                    f"[{scene.scene_id}] 场次成片比它的素材旧（片段重渲过或时长变了），"
+                    f"已重新拼接"
+                )
             _concat_mp4(clips, out, paths.work_dir(ctx.root, ctx.run.run_id, scene.scene_id))
             report.processed += 1
         # 场次拼接产物也要进台账：它在磁盘上占地最大、也是成片的直接上游，

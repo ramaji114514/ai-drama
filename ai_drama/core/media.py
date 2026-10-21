@@ -234,13 +234,33 @@ def concat_clips(clips: List[Path], out: Path, *, work_dir: Optional[Path] = Non
 
 
 def mux_audio(video: Path, audio: Path, out: Path, *, fade_out: float = 0.5) -> Path:
-    """把音轨贴到画面上。音频短了补静音，长了按视频长度截断。"""
+    """把音轨贴到画面上。音频短了补静音，长了按视频长度截断。
+
+    这里有两个都踩过的坑：
+
+    - 淡出要落在**片子末尾**。`afade=st=0.5` 是从第 0.5 秒开始淡出，
+      只有 BGM、没有台词的镜头会变成"开头半秒有声音，剩下全静音"。
+    - `-shortest` 以**最短的那条流**收尾。音频比画面早结束（片尾长镜、
+      BGM 按名义时长生成）时，它砍的是**视频** —— 成片静默变短，而且
+      没有任何检查会报错。所以先把音频补到"和画面一样长"，`-shortest`
+      就只会截音频，视频一秒不少。
+    - 补静音必须补**有限**长度（`apad=whole_dur=`），不能用无限长的
+      `apad`：ffmpeg 9 里 `-c:v copy` + 无限 `apad` + `-shortest` 会
+      一直往复用器里塞音频包，直到 `Error sending frames to consumers:
+      No space left on device` 直接失败（磁盘其实是空的）。这个坑付过学费：
+      整包 2 条字幕用例从 11 passed 变成 2 failed。
+    """
     ff = require_ffmpeg()
     out.parent.mkdir(parents=True, exist_ok=True)
+    total = try_probe_duration(video) or 0.0
+    fade = max(0.0, float(fade_out))
+    fade_filter = ""
+    if total > 0 and fade > 0 and total > fade * 2:
+        fade_filter = f"afade=t=out:st={total - fade:.3f}:d={fade:.3f},"
+    pad_filter = f"apad=whole_dur={total:.3f}," if total > 0 else ""
     run([
         ff, "-y", "-i", str(video), "-i", str(audio),
-        "-filter_complex",
-        f"[1:a]afade=t=out:st={max(0.0, fade_out)}:d={fade_out}[a]",
+        "-filter_complex", f"[1:a]{fade_filter}{pad_filter}anull[a]",
         "-map", "0:v:0", "-map", "[a]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
         "-shortest", str(out),
@@ -349,10 +369,22 @@ def mix_voice_and_music(
         parts.append(f"[{music_idx}:a]aresample={sample_rate},volume=0.16[bgm]")
         labels.append("[bgm]")
 
+    total = try_probe_duration(video) or 0.0
     parts.append(
-        "".join(labels) + f"amix=inputs={len(labels)}:duration=longest:normalize=0[aout]"
+        "".join(labels)
+        + "amix=inputs="
+        + str(len(labels))
+        + ":duration=longest:normalize=0"
+        + (f",apad=whole_dur={total:.3f}" if total > 0 else "")
+        + "[aout]"
     )
 
+    # 混出来的音轨要补到"和画面一样长"，这样 `-shortest` 能截的只剩音频。
+    # 少了这一步，只要最后一句台词早于画面结束（片尾长镜很常见），
+    # 成片就会被音频截短 —— 不报错，只是静默地少几秒。
+    # 但补的长度**必须有限**（`apad=whole_dur=`）：无限 `apad` + `-c:v copy`
+    # 在 ffmpeg 9 里会把音频包一直往复用器里塞，直到
+    # `Error sending frames to consumers: No space left on device` 失败。
     cmd += ["-filter_complex", ";".join(parts), "-map", "0:v:0", "-map", "[aout]"]
     cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)]
     run(cmd)

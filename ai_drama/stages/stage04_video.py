@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,6 +67,39 @@ def _seed_for(shot: Shot, part: int, total: int) -> int:
     return int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16)
 
 
+_PACE_RE = re.compile(r"[，,]\s*(?:\d+(?:\.\d+)?\s*秒内)?匀速完成[^。]*。?\s*$")
+
+
+def _part_prompt(shot: Shot, part: int, total: int, duration: float) -> str:
+    """给"一个镜头拆成几段"里的某一段写提示词。
+
+    为什么不能直接复用整镜的提示词：整镜的末尾写着"15 秒内匀速完成"，
+    而拆段之后每一段只有 5 秒。把整镜的话原样发过去，等于要求模型用
+    5 秒演完 15 秒的信息量 —— 它只能把动作演得又快又乱，或者演一半就循环。
+    这在实际跑的时候就是"每一条长镜都在为错误的节奏付钱"。
+
+    所以这里做两件事：
+      1. 把末尾那句时长交代**摘掉**（它是按整镜算的）；
+      2. 换成"这是第 N/M 段"的交待，并把这一段该演到哪说清楚。
+         段与段之间已经有尾帧续拍接着，所以这里只需要管**节奏**。
+    """
+    base = (shot.video_prompt or shot.action or "").strip()
+    if total <= 1 or not base:
+        return shot.video_prompt or shot.action
+    base = _PACE_RE.sub("。", base).rstrip("。").strip()
+    secs = max(1, int(round(float(duration or 0))))
+    if part <= 1:
+        tail = (f"这是第 1/{total} 段：{secs} 秒内只演这一镜的开头部分，"
+                f"不要在这一段里收尾。")
+    elif part >= total:
+        tail = (f"这是第 {total}/{total} 段：接着上一段结束时的画面往下演到最后，"
+                f"{secs} 秒内完成收尾。")
+    else:
+        tail = (f"这是第 {part}/{total} 段：接着上一段结束时的画面继续演，"
+                f"{secs} 秒内不要重复已经演过的开头，也不要提前收尾。")
+    return f"{base}。{tail}"
+
+
 def _submit_one(ctx: StageContext, shot: Shot, part: int, total: int,
                 duration: float, dest: Path,
                 chain_from: Optional[Path] = None) -> str:
@@ -86,7 +120,7 @@ def _submit_one(ctx: StageContext, shot: Shot, part: int, total: int,
 
     caps = caps_of(ctx.bundle.video)
     request: Dict[str, Any] = {
-        "prompt": shot.video_prompt or shot.action,
+        "prompt": _part_prompt(shot, part, total, duration),
         "image_path": src_image,           # 图生视频：一致性来自首帧
         "duration": duration,
         "size": caps.size,
