@@ -81,6 +81,10 @@ python run.py web
 
 页面只绑本机，也不会替你建新 run、不会花钱：写入口只有"改提示词"和"重跑这一镜"两个。
 
+> 不想开网页、想让**脚本或 agent** 直接拿？`python run.py prompts --idea "一句话" --json out.json`
+> 一步拿到同样的东西。想让自己常用的 agent 会主动调这个工具，装一下
+> [`agent/SKILL.md`](agent/SKILL.md) —— 都写在下面的[「给脚本和 agent 用」](#给脚本和-agent-用)里。
+
 ---
 
 ## 提示词长什么样
@@ -200,24 +204,60 @@ python run.py run "一句话" \
 
 ## 给脚本和 agent 用
 
-网页是给人看的。要让**别的程序**拿提示词，用 `prompts`：它只跑"剧本 + 分镜"
-两步，一台图模型都不碰，产出是一段能直接 `json.load` 的文本。
+网页是给人看的。要让**别的程序**拿提示词，有三条路，按省事程度排：
+
+### 一、命令行直接吐 JSON
 
 ```bash
 python run.py prompts --idea "深夜便利店，店员发现每个客人都买同一件东西" \
   --scenes 2 --shots 2 --json out.json
 
+# 不给 --json 就打到 stdout，进度写 stderr，管道不会脏
 python run.py prompts --idea "一句话" | jq '.scenes[0].shots[0].image_prompt'
 ```
 
-不给 `--json` 就打到 stdout（进度写 stderr，管道不会脏）。字段：
-`characters[].anchor_prompt`（定妆照）、`scenes[].shots[]` 里的 `image_prompt`
-（首帧）、`last_frame`（尾帧）、`video_prompt`（运镜）、`negative_prompt` /
-`video_negative`（两条负向词）。整集的花费只来自文本模型，一集通常不到一分钱。
+它只跑"剧本 + 分镜"两步，**一台图模型都不碰**，所以整集的花费只来自文本模型，
+一集通常不到一分钱。字段：
 
-仓库里带了一份给 agent 的说明：[`agent/SKILL.md`](agent/SKILL.md) ——
-放 `~/.claude/skills/` 或 `.agents/skills/` 下，agent 就知道什么时候该调它、
-粘提示词时要注意什么。
+| 字段 | 是什么 | 粘到哪 |
+| --- | --- | --- |
+| `characters[].anchor_prompt` | 定妆照 | 「角色参考图」/ 图生图 |
+| `scenes[].shots[].image_prompt` | 首帧 | 「首帧」图片框 |
+| `scenes[].shots[].last_frame` | 尾帧 | 「尾帧」图片框 |
+| `scenes[].shots[].video_prompt` | 运镜 + 动作 + 时长 | 视频提示词框 |
+| `negative_prompt` / `video_negative` | 两条负向词 | 负向提示词框（没有就跳过） |
+
+### 二、让 agent 自己去调（skill 入口）
+
+仓库里带了一份 agent 说明：[`agent/SKILL.md`](agent/SKILL.md)。它写清了什么时候该
+用这个工具、怎么调、JSON 长什么样、粘提示词时最容易翻车的三件事。放进你用的
+agent 的技能目录，它就会自己判断该不该调：
+
+```bash
+# Claude Code / 大多数本地 agent
+mkdir -p ~/.claude/skills/ai-drama-prompts
+cp agent/SKILL.md ~/.claude/skills/ai-drama-prompts/
+
+# 用 .agents/skills 约定的一类工具（DSH、部分 CLI agent）
+mkdir -p ~/.agents/skills/ai-drama-prompts
+cp agent/SKILL.md ~/.agents/skills/ai-drama-prompts/
+```
+
+只在某个项目里用，就放到那个项目的 `.claude/skills/` 或 `.agents/skills/` 下。
+没有技能目录的 agent（比如直接对话的），把 `agent/SKILL.md` 的内容贴进它的
+系统提示或项目说明里，效果一样。
+
+装好之后你可以这样说：
+
+> 帮我写一个 30 秒的悬疑短剧分镜，要能直接粘进即梦的提示词。
+
+agent 会跑 `python run.py prompts`，把拿到的首帧/尾帧/运镜分开给你，而不是
+把一整段文字糊在一起。
+
+### 三、网页上复制
+
+最笨也最直观的一条：`python run.py web` 打开分镜页，每段提示词后面都有「复制」，
+顶上还有「导出全部提示词」把整集存成 `.txt`。适合手动挑几镜去出。
 
 ---
 
@@ -328,6 +368,7 @@ config/     模型目录、质检规则
 docs/       架构 / 接厂商 / 拍多集
 runs/       每条 run 的产物（不进版本库）
 projects/   角色圣经（不进版本库）
+agent/      给 agent 的调用说明（SKILL.md）
 ```
 
 ---
