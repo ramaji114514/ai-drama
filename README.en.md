@@ -163,6 +163,41 @@ The structure (first frame / last frame / camera / negative) is platform-neutral
 
 ---
 
+## Two people in one shot: who gets the reference image
+
+The main image models take **one** reference image per call, and the video model
+takes one first frame. So any shot with two people means one of those faces is
+described in words only — that's the interface, not a preference.
+
+Which one gets it? Ranked by "whose face is on screen longest":
+
+1. **Whoever speaks in this shot** — the line is theirs, the camera sits on them;
+2. if nobody speaks, **how often they appear in the episode** — more appearances,
+   more benefit from locking the face;
+3. ties fall back to the order in the storyboard.
+
+The one who misses out gets an `【无参考图】` block: "generate from the description,
+do not put @图片1's face on them". Better than silence — silence gives you two
+people sharing one face.
+
+### To lock both faces, split the shot
+
+```bash
+python run.py split run_xxxxxxxx --shot sc01/shot_000
+```
+
+It proposes the old film solution: **single close-up → reverse single → wide two-shot**.
+
+The third segment is wide on purpose: **the smaller a face is in frame, the less the
+model needs a reference**. In a wide shot both people are small enough that costume
+and hair identify them.
+
+`split` **only proposes** — it never edits your storyboard. Splitting means new shots,
+new ordering, a reference choice per segment; any of those decided by a script can
+wreck a scene you already tuned.
+
+---
+
 ## Want the whole thing N seconds long? Ask for a number
 
 ```bash
@@ -278,6 +313,7 @@ python run.py web                     # viewer: storyboard / timeline / QC / cos
 | `resume <run_id>` | resume, running only what is missing |
 | `status <run_id>` | per-shot progress |
 | `shots <run_id>` | export the storyboard (`--format md` / `json` / `csv`) |
+| `split <run_id>` | two people in one shot: a split plan (`--shot`, `--json`) |
 | `cost <run_id>` | cost breakdown (by stage / by provider) |
 | `assets <run_id>` | asset ledger; `--check` reconciles it |
 | `asset <asset_id>` | the lineage of one asset |

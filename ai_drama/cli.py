@@ -43,6 +43,7 @@ from .core.pipeline import Pipeline
 from .core.qc import QcRules, rules_path
 from .core.store import Store, default_db_path
 from .providers import registry
+from .providers.base import caps_of
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / "skills"
@@ -622,6 +623,61 @@ def shots_csv(ep: Any) -> str:
                 sh.negative_prompt, sh.video_negative,
             ])
     return buf.getvalue()
+
+
+def cmd_split(args: argparse.Namespace) -> int:
+    """这镜该不该拆、怎么拆。
+
+    只出方案，**不改** episode.json：拆镜要新建 shot、重排 order、决定哪一段
+    用哪张参考图，任何一步由脚本替你做都可能把已经调好的分镜搅乱。所以这里
+    只回答一个问题："一镜两个人在我只有一张参考图的时候，怎么拍。"
+    """
+    from .core import consistency
+    from .stages.stage02_storyboard import characters_on_screen
+
+    load_env()
+    store = open_store(args)
+    ep = store.get_episode(args.run_id)
+    if ep is None:
+        print(f"没有分镜记录：{args.run_id}（先跑 script 和 storyboard）")
+        return 1
+    # 上限必须问 provider，不能写死 1：换一家支持多张参考图的模型，这套方案
+    # 就该自动变成"不用拆"。
+    bundle = registry.build_bundle()
+    max_refs = int(getattr(caps_of(bundle.image), "max_ref_images", 1) or 1)
+
+    targets = [sh for sh in ep.shots if not args.shot or sh.label == args.shot]
+    if args.shot and not targets:
+        print(f"没有这个镜头：{args.shot}")
+        return 1
+    plans = []
+    for shot in targets:
+        on_screen = characters_on_screen(ep, shot)
+        plan = consistency.split_plan(ep, shot, on_screen, max_refs)
+        if not plan and not args.all:
+            continue
+        plans.append((shot, on_screen, plan))
+
+    if args.json:
+        print_json([{"shot": shot.label,
+                     "characters": [c.name for c in on_screen],
+                     "max_ref_images": max_refs,
+                     "plan": [seg.as_dict() for seg in plan]}
+                    for shot, on_screen, plan in plans])
+        return 0
+    if not plans:
+        print(f"没有需要拆的镜头（单镜最多 {max_refs} 张参考图，出镜人数都没超）")
+        return 0
+    for shot, on_screen, plan in plans:
+        print(f"== {shot.label} · {shot.framing} · {shot.duration:.1f}s · "
+              f"出镜 {'、'.join(c.name for c in on_screen)}")
+        for line in consistency.explain(ep, shot, on_screen, max_refs):
+            print(f"   {line}")
+        print(consistency.plan_text(plan))
+        print()
+    print("拆完把新的分镜写进 episode.json（或让剧本模型重写这一场），")
+    print("再 resume --stages storyboard,frames 就能出图 —— 这一步不替你做。")
+    return 0
 
 
 def cmd_shots(args: argparse.Namespace) -> int:
@@ -1315,6 +1371,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("run_id")
     add_common(sp)
     sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("split", help="一镜两个人怎么办：拆镜方案（只出方案，不改分镜）")
+    sp.add_argument("run_id")
+    sp.add_argument("--shot", help="只看某一镜（如 sc01/shot_000）；不给就看全部超员的")
+    sp.add_argument("--all", action="store_true", help="连不需要拆的镜头也列出来")
+    sp.add_argument("--json", action="store_true", help="机器可读")
+    add_common(sp)
+    sp.set_defaults(func=cmd_split)
 
     sp = sub.add_parser("shots", help="导出分镜表")
     sp.add_argument("run_id")

@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from ..core import cast, lint, paths
+from ..core import cast, consistency, lint, paths
 from ..core.context import StageContext, StageReport
 from ..core.faces import matches_character
 from ..core.identity import UNLOCKED_HEAD, shot_identity_prompt
@@ -243,8 +243,12 @@ def reference_labels(ep, shot: Shot, max_refs: int = 1) -> List:
     而只传了一张图，模型不会报错 —— 它会以为第二张就是它想象的任何东西。
     上限取 provider 自报的 `caps.max_ref_images`（见 core/catalog）。
     """
-    found = [c for c in characters_in_shot(ep, shot) if c.ref_image]
-    return [("角色", c.name) for c in found[:max(0, max_refs)]]
+    # 谁拿参考图不是按数组顺序，而是按"谁的脸被看得最久"（见 core/consistency）：
+    # 说话的优先，其次全片出镜次数多的。以前取声明里的第一个，等于把
+    # "这场戏是谁的"交给 JSON 数组的先后。
+    usable = [c for c in characters_in_shot(ep, shot) if c.ref_image]
+    picks = consistency.pick_reference(ep, shot, usable, max_refs)
+    return [("角色", c.name) for c in picks.locked]
 
 
 #: 拼接前要先剥掉的句尾标点。**这是真实输出里暴露出来的问题**：
@@ -286,8 +290,9 @@ def unlocked_names(ep, shot: Shot, max_refs: int = 1) -> List[str]:
     都不一样 —— 成片里看起来像人物漂移，其实是没告诉他这人长什么样。
     """
     chars = characters_in_shot(ep, shot)
-    locked = [c for c in chars if c.ref_image][: max(0, max_refs)]
-    locked_names_ = {id(c) for c in locked}
+    usable = [c for c in chars if c.ref_image]
+    locked_names_ = {id(c) for c in
+                     consistency.pick_reference(ep, shot, usable, max_refs).locked}
     # **没有定妆照的角色也要算进来**：它才是最需要"文字描述"声明的那个人。
     # 只筛 `c.ref_image` 等于把"根本锁不了脸的人"从提示词里整个漏掉，
     # 而模型这时连一个"这个人长什么样"的线索都没有。
@@ -618,9 +623,16 @@ def run(ctx: StageContext) -> StageReport:
         report.notes.append(
             f"[!] {crowded} 个镜头出镜人数超过参考图上限（{max_refs}），"
             f"多出来的人锁不住脸。提示词里已写明「{UNLOCKED_HEAD}」那段："
-            "ta 靠文字描述生成、不许套用 @图片1 的长相。"
-            "要真正锁住脸，只能拆成单人镜头，或换支持更多参考图的模型"
+            "ta 靠文字描述生成、不许套用 @图片1 的长相"
         )
+        # 说清"参考图给了谁、为什么"，再给一条可执行的出路（拆镜方案在
+        # `python run.py split <run_id>` 里，不在这里把报告写成一本书）。
+        for shot in ep.shots:
+            on_screen = characters_on_screen(ep, shot)
+            if len(on_screen) <= max_refs:
+                continue
+            for line in consistency.explain(ep, shot, on_screen, max_refs):
+                report.notes.append(f"    · {shot.label}：{line}")
     # 尾帧退化成首帧的复述时必须说出来。不说的话，用户拿去做首尾帧工具，
     # 两端会是同一个画面 —— 那不是"效果差一点"，是这一镜根本没动。
     no_end = sum(1 for s in ep.shots if not (s.end_action or "").strip())

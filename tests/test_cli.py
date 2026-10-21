@@ -110,3 +110,15 @@ def test_pytest_ini_does_not_pre_quiet_the_summary():
     tokens = line.split("=", 1)[1].split()
     assert "--strict-markers" in tokens
     assert "-q" not in tokens and "-qq" not in tokens, line
+
+
+def test_split_shows_up_in_help_and_needs_a_real_episode(capsys):
+    """`split` 在帮助里能被看见；没有分镜时给一句人话，不是 traceback。"""
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = capsys.readouterr().out
+    assert "split" in out
+
+    code = cli.main(["split", "run_does_not_exist"])
+    assert code == 1
+    assert "没有分镜记录" in capsys.readouterr().out
