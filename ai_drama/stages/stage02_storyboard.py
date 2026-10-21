@@ -21,10 +21,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import List, Optional
 
-from ..core import cast, paths
+from ..core import cast, lint, paths
 from ..core.context import StageContext, StageReport
 from ..core.faces import matches_character
 from ..core.identity import UNLOCKED_HEAD, shot_identity_prompt
@@ -48,6 +49,13 @@ CAMERA_MOVE = {
     "close": "固定机位，极缓推近",
     "extreme_close": "极缓推近后停顿",
 }
+
+#: 画面描述的字数预算（中文、不含必带的参考锁定段）。
+#:
+#: 平台实测单人文本生视频 30–80 字最稳；这里是"图生视频 + 一到两个角色"的
+#: 场景，必须装下两段外貌、动作、景别、焦段和人数，200 字上下是可用的上限。
+#: 超了模型开始挑着执行 —— 所以宁可截短，让每条要求都落到实处。
+PROMPT_BUDGET = 220
 
 NEGATIVE = "文字, 字幕, 水印, 畸形手指, 多手多脚, 面部崩坏, 低分辨率, 模糊"
 
@@ -252,6 +260,16 @@ def _tidy(text: str) -> str:
     return (text or "").strip().rstrip(_TAIL_PUNCT).strip()
 
 
+def _detail_mode() -> str:
+    """短版还是详细版。默认短版：平台实测中文 30–80 字最稳，200 字顾此失彼。"""
+    return (os.environ.get("AI_DRAMA_PROMPT_DETAIL") or "short").strip().lower()
+
+
+def _clip(text: str, budget: int) -> str:
+    """按预算精简一段文字；预算内原样返回，不改手写的节奏。"""
+    return lint.shorten(text or "", budget)
+
+
 def _join_parts(parts) -> str:
     """用中文逗号把若干段接成一句，剥掉每段自带的句尾标点。
 
@@ -277,14 +295,31 @@ def unlocked_names(ep, shot: Shot, max_refs: int = 1) -> List[str]:
 
 
 def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
-    parts = [ep.style or ""]
+    """首帧提示词。
+
+    顺序是按"模型最先看什么"排的，不是按读起来顺不顺：主体（谁）→ 动作 →
+    镜头（焦段/景深）→ 人数 → 风格。风格放最后，因为它只是**气氛**，放前面
+    会和角色描述抢权重（"冷青胶片感"压过"十七岁瘦削的少年"）。
+
+    短版是默认：100 字上下。这不是省字数，是实证 —— 平台实测中文 30–80 字
+    最稳，200 字开始"顾此失彼"，每条要求都在争夺注意力。要详细版就设
+    `AI_DRAMA_PROMPT_DETAIL=full`。
+    """
+    short = _detail_mode() == "short"
+    parts: List[str] = []
     for ch in characters_in_shot(ep, shot):
-        parts.append(f"角色 {ch.name}：{ch.desc}")
+        desc = _clip(ch.desc, 36) if short else (ch.desc or "")
+        parts.append(f"角色 {ch.name}：{desc}")
+    parts.append(_clip(shot.action, 64) if short else shot.action)
     # 景别是"这一镜要怎么取景"，action 里往往已经写过了（"俯拍特写：……"）。
     # 两句都留，模型会以为要同时满足两个景别。
     if not _action_already_names_framing(shot.action):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
-    parts.append(shot.action)
+    # 焦段/景深/光比：十来个字，换来透视和光比的确定性
+    parts.append(lint.lens_clause(shot.framing))
+    # 人数写死 —— 不写，模型会在空处补人
+    parts.append(lint.count_clause([c.name for c in characters_in_shot(ep, shot)]))
+    parts.append(_clip(ep.style or "", 24) if short else (ep.style or ""))
     body = _join_parts(parts)
     return shot_identity_prompt(body, labels, unlocked)
 
@@ -292,18 +327,23 @@ def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
 def compose_last_frame(ep, shot: Shot, labels=(), unlocked=()) -> str:
     """尾帧提示词 —— 这一镜**结束那一刻**的画面。
 
-    与 compose_image_prompt 对称（同样的风格、角色锚点、景别），只把中间那句
+    与 compose_image_prompt 对称（同样的角色锚点、景别、镜头），只把中间那句
     从 action 换成 end_action。**没有 end_action 就退回 action**，因为老项目
     和没照新 schema 写的模型都不会给这个字段；退回会让尾帧变成首帧的复述，
     所以这里不假装它等价 —— 调用方会把"退化了"记进报告。
     """
+    short = _detail_mode() == "short"
     end = shot.end_action or shot.action
-    parts = [ep.style or ""]
+    parts: List[str] = []
     for ch in characters_in_shot(ep, shot):
-        parts.append(f"角色 {ch.name}：{ch.desc}")
+        desc = _clip(ch.desc, 36) if short else (ch.desc or "")
+        parts.append(f"角色 {ch.name}：{desc}")
+    parts.append(_clip(end, 64) if short else end)
     if not _action_already_names_framing(end):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
-    parts.append(end)
+    parts.append(lint.lens_clause(shot.framing))
+    parts.append(lint.count_clause([c.name for c in characters_in_shot(ep, shot)]))
+    parts.append(_clip(ep.style or "", 24) if short else (ep.style or ""))
     body = _join_parts(parts)
     return shot_identity_prompt(body, labels, unlocked)
 
@@ -316,12 +356,14 @@ def compose_video_prompt(shot: Shot) -> str:
     把资产图那套 "不要把白背景和站姿搬进来" 的排除条款套上去，
     只会让模型去改掉一个本来就对的构图。
 
-    什么时候该加：如果哪天视频侧改成拿**角色资产图**做参考，
-    就要用 identity.reference_block，并且注意顺序与图片列表对齐。
+    三个细节都是踩过的坑：
 
-    为什么要写"匀速完成"：不写节奏，模型会在长镜头里自己发挥 —— 前 2 秒
-    演完整段动作，剩下 13 秒人物在画面里呆着；或者反过来拖到最后才动。
-    这不是提示词写得不够美，是它不知道这段有多长。
+    1. **运镜句放最前面**。可灵把末尾那句运镜当成"可选补充"，放后面经常被
+       忽略，画面自己横移过去。先说"镜头缓慢推近"，再说人做什么。
+    2. **要写"匀速完成"**。不写节奏，模型会在长镜头里自己发挥 —— 前 2 秒
+       演完整段动作，剩下 13 秒人物在画面里呆着。
+    3. **有台词就让人开口**。不写这句，画面里的人闭嘴站着，配音成了画外音。
+       顺带把 `end_action` 写成"最后停在哪儿"，告诉它这一段演到哪收。
     """
     move = CAMERA_MOVE.get(shot.framing, "镜头缓推")
     seconds = float(shot.duration or 0.0)
@@ -329,7 +371,14 @@ def compose_video_prompt(shot: Shot) -> str:
         pace = f"{seconds:.0f} 秒内匀速完成，不加速也不放慢"
     else:
         pace = "匀速完成，不加速也不放慢"
-    return f"{_tidy(shot.action)}。{move}，{pace}。"
+    out = f"{move}，{pace}：{_tidy(shot.action)}。"
+    end = _tidy(shot.end_action or "")
+    if end:
+        out += f"最后停在：{end}。"
+    speak = lint.speaking_clause(shot.dialogue or "")
+    if speak:
+        out += f"{speak}。"
+    return out
 
 
 def _dryrun_portrait_feeding_a_real_model(ctx: StageContext, portraits_in_play: int) -> bool:
@@ -447,6 +496,7 @@ def run(ctx: StageContext) -> StageReport:
     locked = 0
     crowded = 0
     changed = 0
+    findings: List[lint.Finding] = []
     declared = 0                 # 出镜角色由分镜显式给出的镜头数
     guessed = 0                  # 靠名字子串猜的（旧 episode.json / 模型漏字段）
     by_name = 0                  # 声明里靠名字/别名认出来的引用数（降级，要报）
@@ -482,6 +532,9 @@ def run(ctx: StageContext) -> StageReport:
             shot.negative_prompt = compose_negative_prompt(ep, shot)
             shot.video_negative = compose_video_negative(shot)
             changed += 1
+        # 体检放在"拼完之后"：它读的是最终文本，能发现运镜太长、没有开口这类
+        # 拼装阶段看不出来的问题。不联网、不花钱，所以每次都能跑。
+        findings.extend(lint.lint_shot(shot, budget=PROMPT_BUDGET))
         # 时长统一在这里复核：模型给的值不可信，公式给的值才可复现。
         # preferred 跟着整部目标走（均摊到每镜），没定目标就是默认片长。
         refined = estimate_shot_seconds(shot, preferred_s=preferred)
@@ -509,6 +562,7 @@ def run(ctx: StageContext) -> StageReport:
         head += f"（另有 {reused} 张沿用项目里的，未重复生成）"
     lock = f"参考锁定 {locked}/{len(ep.shots)} 镜（provider 单镜最多 {max_refs} 张参考图）"
     report.notes.append(head)
+    report.notes.append(lint.summarize(findings))
     report.notes.append(lock)
     if ep.target_seconds > 0 and preferred < 2.0:
         report.notes.append(

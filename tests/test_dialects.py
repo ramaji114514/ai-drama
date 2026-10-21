@@ -129,14 +129,28 @@ def test_hailuo_takes_both_frames_but_has_no_negative_box():
     assert any("负向词" in x for x in got.dropped)
 
 
-def test_the_english_ones_drop_the_last_frame_and_say_it_out_loud():
-    """Runway / Veo / Sora 只认首帧：尾帧不能当图给，要写清楚去哪了。"""
-    shot = _shot()
-    for key in ("runway", "veo", "sora"):
-        got = dialects.render(None, shot, key)
+def test_platforms_without_a_last_frame_slot_say_where_the_tail_went():
+    """Sora 只认首帧：尾帧不能当图给，要写清楚去哪了。
+
+    Runway Gen-4.5 与 Veo 都有尾帧槽，所以它们**不该**出现在这条里 ——
+    能力表是查官方文档得到的，不是按"洋平台大概都只给首帧"猜的。
+    """
+    for key in ("sora",):
+        got = dialects.render(None, _shot(), key)
         assert "last_frame" not in {f.key for f in got.fields}, key
         assert any("尾帧" in x for x in got.dropped), key
+
+
+def test_only_the_platforms_that_really_have_a_negative_box_get_one():
+    """有负向框的：通用/可灵/Veo。其余一律丢掉并写明原因。"""
+    shot = _shot()
+    for key in ("generic", "kling", "veo"):
+        got = dialects.render(None, shot, key)
+        assert "negative" in {f.key for f in got.fields}, key
+    for key in ("jimeng", "seedance", "hailuo", "runway", "sora"):
+        got = dialects.render(None, shot, key)
         assert "negative" not in {f.key for f in got.fields}, key
+        assert any("负向" in x for x in got.dropped), key
 
 
 def test_english_platforms_admit_the_prompt_is_still_chinese():

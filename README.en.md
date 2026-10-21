@@ -125,7 +125,7 @@ Episode 1, shot 1 of 《雨夜旧书店》, real output (excerpt):
 > 多余的手指, 畸形的手, 五官错位, 文字, 水印, 字幕, 过曝, 塑料皮肤……
 > 变脸, 闪烁, 跳帧, 动作僵住, 鬼影
 
-Four things that usually go wrong are handled literally here:
+Things that usually go wrong are handled literally here:
 
 | Usual failure | How it is handled |
 | --- | --- |
@@ -133,6 +133,30 @@ Four things that usually go wrong are handled literally here:
 | A last frame can't be derived from an action | The script model writes `end_action` separately, or the prompt would be blank |
 | “No watermark” inside the positive prompt produces a watermark | Always goes into the separate negative field |
 | A 15-second shot that the model finishes in two | The camera prompt says “finish evenly within 15 seconds” |
+| The camera sentence comes last and gets treated as optional | Camera first: how it is shot, then what the person does |
+| A line of dialogue, but nobody moves their mouth | Adds “lips in sync with the line” automatically |
+| “Lin Xi stands at the door” and the model adds two extra people | Headcount is pinned: “only Lin Xi in frame”; empty shots say “nobody in frame” |
+| Only “medium shot”, so the image looks flat and bright | Adds lens and light ratio: “35mm, medium depth of field, side backlight” |
+| Two camera moves in one shot (“push in, then pan”) | The linter names it — the model will pick one |
+
+### Short by default, detailed on request
+
+On the platforms, Chinese prompts are steadiest at 30–80 characters; past ~200 the
+model starts picking which requests to obey, so none of them land. The first frame is therefore kept under about 200
+characters of picture description (the mandatory reference-lock block is not
+counted): who, doing what, shot how — style pushed to the last clause. For the long version:
+
+```bash
+AI_DRAMA_PROMPT_DETAIL=full
+```
+
+### Every shot is checked before it reaches you
+
+After composing, `stage02` runs a local lint (no network, no cost): missing
+`end_action`, a camera move that cannot finish in the shot, a line with no lip
+movement, several moves in one shot, no negatives — all reported as
+“prompt check: N notes” in the stage report. It never blocks you; it just says out
+loud what you would otherwise notice in the finished video.
 
 Prompts are written in Chinese because the primary target platforms are Chinese.
 The structure (first frame / last frame / camera / negative) is platform-neutral.
@@ -164,25 +188,35 @@ edit — 24 shots cannot perform a 30-second scene.
 ## Every platform wants a different shape
 
 The same shot does not use the same input boxes on Kling, Jimeng, Seedance, Hailuo
-or Runway: some have a separate negative field, some don't; some accept a last-frame
-image, some only a first frame; some will treat `【参考锁定】`-style headings as
-picture content and try to draw them. Pick your target in the top right and the
-prompts below are rewritten for that platform:
+or Runway: whether there is a separate negative box, whether a last-frame image is
+accepted, and how many characters one box holds all differ. Pick your target in the
+top right and the prompts below are rewritten for that platform:
 
 ![Switching dialects per platform](docs/images/web-dialects.jpg)
 
-- **Generic**: all five blocks kept, for people or APIs that understand the layering.
-- **Kling**: headings stripped, first/last frame images uploaded separately, negatives in its own box.
-- **Jimeng**, **Seedance**, **Hailuo**: no negative box, so the negative block is
-  **dropped entirely** and the page says why — don't move it into the positive
-  field, every noun there is something the model tries to draw. Over-long text is
-  cut at a sentence boundary. Hailuo additionally has two image slots, so both
-  frames are usable.
-- **Runway**, **Veo**, **Sora**: first frame only, so the last-frame image is
-  dropped (the last-frame text is merged into the video prompt as “perform up to
-  here”); no negative box either. These three are English platforms and **the
-  prompts themselves are still Chinese** — the page says so. The skeleton does not
-  translate for you, because that would mean another model call and another bill.
+| Platform | Negative box | Last-frame image | Box limit | Camera wording |
+| --- | --- | --- | --- | --- |
+| Generic | yes | yes | 4000 | plain sentence |
+| Kling | yes | yes | 2500 | plain sentence, camera first |
+| Jimeng | no | yes | 2000 | plain sentence |
+| Seedance (Doubao) | no | yes | 2000 | plain sentence, assets as `@图片1` |
+| Hailuo (MiniMax) | no | yes | 2000 | bracketed commands, e.g. `[Push in]` |
+| Runway | no | yes | 2000 | plain sentence (English is steadier) |
+| Veo | yes (500 chars) | yes | 2000 | plain sentence (English is steadier) |
+| Sora | no | first frame only | 2000 | plain sentence (long sentences work) |
+
+A few rules:
+
+- **On platforms without a negative box the negative block is dropped entirely**,
+  and the page says why — don't move it into the positive field, every noun there
+  is something the model tries to draw.
+- **First-frame-only platforms** (Sora) merge the last-frame text into the video
+  prompt as “perform up to here”.
+- **Over-long text is cut at a sentence boundary** and marked as truncated. The
+  limits are taken from the official docs, not guessed.
+- **English platforms** (Runway / Veo / Sora) get **Chinese prompts anyway**; the
+  page says so. The skeleton does not translate for you, because that would mean
+  another model call and another bill.
 
 The exported `.txt` follows the same choice: pick a platform and the file contains
 exactly the blocks that platform wants.

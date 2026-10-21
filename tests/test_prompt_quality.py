@@ -121,13 +121,18 @@ def test_a_style_that_ends_with_a_full_stop_does_not_leave_a_double_punctuation(
     prompt = compose_image_prompt(ep, _shot("灰猫端坐在窗台正中。"))
     assert "。，" not in prompt
     assert "。。" not in prompt
-    assert "雨夜潮湿质感，中景，人物腰部以上，灰猫端坐" in prompt
+    # 风格现在排在最后（主体和动作权重更高），但句子本身要完整出现
+    assert "灰猫端坐在窗台正中" in prompt
+    assert "雨夜潮湿质感" in prompt
+    assert "中景，人物腰部以上" in prompt
 
 
 def test_the_video_prompt_does_not_double_its_full_stop():
     prompt = compose_video_prompt(_shot("林溪弯腰凑近猫，眉头微皱。", duration=15.0))
     assert "。。" not in prompt
-    assert prompt.startswith("林溪弯腰凑近猫，眉头微皱。轻微手持跟随")
+    # 运镜放最前面：可灵会把末尾的运镜当可选补充，放后面经常被忽略
+    assert prompt.startswith("轻微手持跟随，15 秒内匀速完成")
+    assert "林溪弯腰凑近猫，眉头微皱" in prompt
 
 
 def test_a_part_that_is_only_punctuation_is_dropped_not_joined():

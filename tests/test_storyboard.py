@@ -93,7 +93,9 @@ def test_the_lock_goes_to_the_front_and_excludes_the_asset_layout():
     assert prompt.startswith(REFERENCE_HEAD)
     assert "@图片1 = 角色「林晚」本人" in prompt
     assert NOT_INHERIT in prompt
-    assert prompt.rstrip().endswith("林晚推开门")
+    # 顺序变了：主体 → 动作 → 镜头 → 人数 → 风格，所以动作不再压尾
+    assert "林晚推开门" in prompt
+    assert "画面中只有 林晚" in prompt
 
 
 def test_without_a_reference_image_the_prompt_has_no_lock_at_all():
