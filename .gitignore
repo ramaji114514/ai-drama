@@ -11,6 +11,9 @@ projects/
 # 数据库与日志
 *.sqlite
 *.sqlite3
+*.db
+*.db-wal
+*.db-shm
 *.log
 
 # Python
