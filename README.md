@@ -1,5 +1,7 @@
 # ai-drama
 
+[![tests](https://github.com/ramaji114514/ai-drama/actions/workflows/tests.yml/badge.svg)](https://github.com/ramaji114514/ai-drama/actions/workflows/tests.yml)
+
 **给一句话，拿到一套能直接粘进视频模型的提示词。**
 
 你说「深夜加班回家，发现自家门锁被换过，猫眼从里面被贴住了」，它给你：
@@ -392,6 +394,17 @@ python -m pytest
 
 全部离线，不碰网络、不花钱。`--strict-markers`；带 `ffmpeg` 标记的用例
 需要本机装了 FFmpeg。
+
+只验提示词那部分（不需要 FFmpeg）：
+
+```bash
+python -m pytest -m "not ffmpeg"
+python tools/doc_audit.py     # 文档里写的命令/路径是不是真的存在
+```
+
+CI 上跑的是两套（见 `.github/workflows/tests.yml`）：
+**不装 ffmpeg 的离线套件**（py3.10 与 py3.12 各一遍 —— 只拿提示词的人本来就不该
+被 ffmpeg 拦住），以及**装了 ffmpeg 的完整套件**（真拼片、真烧字幕）。
 
 ---
 

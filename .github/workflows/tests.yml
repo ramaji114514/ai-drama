@@ -1,0 +1,74 @@
+name: tests
+
+# 两件事值得分开验：
+#   1. **不装 ffmpeg** 也能跑完（只拿提示词的人根本不需要 ffmpeg，这条路不能悄悄坏）
+#   2. 装了 ffmpeg 的完整套件（真拼片、真烧字幕）
+# 所以是两个 job，不是一个 job 里加条件。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: 离线套件 / py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # 刻意**不**装 ffmpeg：这条道验的就是"没有 ffmpeg 也能用"
+      - name: 装测试依赖
+        run: python -m pip install --upgrade pip pytest pillow
+
+      - name: 跑离线套件（跳过标了 ffmpeg 的用例）
+        run: python -m pytest -q -m "not ffmpeg"
+
+      - name: 文档体检
+        run: python tools/doc_audit.py
+
+      - name: 仓库里没有真 key
+        run: python -m pytest -q tests/test_no_secrets.py
+
+  with-ffmpeg:
+    name: 完整套件（含出片）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 装 ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: 装测试依赖
+        run: python -m pip install --upgrade pip pytest pillow
+
+      - name: 跑完整套件
+        run: python -m pytest -q
+
+      # 失败时把 pytest 的详细输出翻出来，省得只看到一行 FAILED
+      - name: 失败时补一份详细报告
+        if: failure()
+        run: python -m pytest -q -x --tb=long 2>&1 | tail -80
