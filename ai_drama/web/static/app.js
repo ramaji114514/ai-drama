@@ -289,6 +289,7 @@ function tabStoryboard(d) {
   const opts = Object.values(state.dialects || {});
   const bar = `<div class="pbar">
       <button class="cp" onclick="exportPrompts()">导出全部提示词</button>
+      <button class="cp" onclick="exportShotsCsv()">导出分镜表 CSV</button>
       ${opts.length ? `<label class="dim">粘贴到
         <select id="dialect" onchange="state.dialect=this.value; renderTab()">
           ${opts.map((o) => `<option value="${esc(o.key)}"${o.key === state.dialect
@@ -306,6 +307,45 @@ function tabStoryboard(d) {
   return bar + cast + scenes +
     `<p class="hint">${goal} · 结构来自
      <code>episode.json</code>（可以手改，改完 <code>resume --stages frames</code>）。</p>`;
+}
+
+/* 分镜表 CSV：给制片和剪辑的那一份。
+   和上面那个 .txt 不同，这份是**表格**：一行一镜，列是场次/景别/时长/台词/
+   出镜/四段提示词。走同一个 Blob 下载，不碰服务器。
+   两个细节不能省：单元格要按 CSV 规则转义（台词里本来就有逗号和引号），
+   开头要带 BOM（不然 Excel 打开全是乱码 —— 而这份文件的第一用途就是双击）。 */
+function exportShotsCsv() {
+  const sb = (state.data || {}).storyboard;
+  if (!sb) return;
+  const cols = ['场次', '镜号', '景别', '时长秒', '画面', '结束画面', '台词',
+                '出镜', '首帧提示词', '尾帧提示词', '视频提示词',
+                '负向词图', '负向词视频'];
+  const cell = (v) => {
+    const t = (v === null || v === undefined) ? '' : String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const rows = [cols.join(',')];
+  for (const sc of (sb.scenes || [])) {
+    for (const sh of (sc.shots || [])) {
+      rows.push([
+        sc.scene_id, (sh.order || 0) + 1, sh.framing, (sh.duration || 0).toFixed(2),
+        sh.action, sh.end_action, sh.dialogue,
+        (sh.characters || []).join('、'),
+        sh.image_prompt, sh.last_frame, sh.video_prompt,
+        sh.negative_prompt, sh.video_negative,
+      ].map(cell).join(','));
+    }
+  }
+  const name = ((sb.title || '分镜表') + '-分镜表.csv').replace(/[\\/:*?"<>|]/g, '_');
+  const blob = new Blob(['\ufeff' + rows.join('\n')],
+                        {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 /* 一键把整集的提示词导成一份纯文本：定妆照 + 每一镜的首帧/尾帧/运镜。

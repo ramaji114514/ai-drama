@@ -45,6 +45,9 @@ class Dialect:
     max_chars: int
     #: 要不要去掉 `【…】` 小标题。
     strip_headings: bool
+    #: 这套提示词该用什么语言读。`zh` = 骨架现在写出来的中文；
+    #: `en` = 英文平台，中文字段它也能吃，但英文更稳（见 tip）。
+    lang: str = "zh"
     #: 页面上给用户的一句提示：告诉他这几段分别往哪儿粘。
     tip: str = ""
 
@@ -106,6 +109,51 @@ DIALECTS: Dict[str, Dialect] = {
         strip_headings=True,
         tip="没有负向参数：负向词已省略。时长写在同一句里，不要另起一行。",
     ),
+    "hailuo": Dialect(
+        key="hailuo",
+        title="海螺（MiniMax）",
+        has_negative=False,
+        has_last_frame=True,
+        max_chars=1500,
+        strip_headings=True,
+        tip="没有负向框：负向词已省略。首帧和尾帧各有一个图槽，两段提示词分别对应。",
+    ),
+    # 下面三家是英文平台。字段结构能对齐（没有负向框、只认首帧），
+    # 但**语言这一层骨架不做**：翻一遍要再调一次模型，等于给"只拿提示词"
+    # 的人加一笔钱。所以 tip 里明说"英文更稳"，把选择权留给用户。
+    "runway": Dialect(
+        key="runway",
+        title="Runway（Gen-4）",
+        has_negative=False,
+        has_last_frame=False,
+        max_chars=1000,
+        strip_headings=True,
+        lang="en",
+        tip="只认首帧、没有负向框：尾帧和负向词都省了。提示词是中文写成的，"
+            "粘进去前用浏览器翻译成英文更稳。",
+    ),
+    "veo": Dialect(
+        key="veo",
+        title="Veo（Google）",
+        has_negative=False,
+        has_last_frame=False,
+        max_chars=1200,
+        strip_headings=True,
+        lang="en",
+        tip="只认首帧、没有负向框：尾帧和负向词都省了。英文更稳；"
+            "它偏爱「一个镜头一句话」的写法，别堆形容词。",
+    ),
+    "sora": Dialect(
+        key="sora",
+        title="Sora",
+        has_negative=False,
+        has_last_frame=False,
+        max_chars=2000,
+        strip_headings=True,
+        lang="en",
+        tip="只认首帧、没有负向框：尾帧和负向词都省了。它吃长句，"
+            "把这一段当成一段摄影指导来读，中英文都行。",
+    ),
 }
 
 DEFAULT_KEY = GENERIC_KEY
@@ -117,7 +165,7 @@ def keys() -> Sequence[str]:
 
 def catalog() -> List[Dict[str, Any]]:
     """页面上的下拉框：有哪些平台可选、各自一句话该注意什么。"""
-    return [{"key": x.key, "title": x.title, "tip": x.tip,
+    return [{"key": x.key, "title": x.title, "tip": x.tip, "lang": x.lang,
              "has_negative": x.has_negative, "has_last_frame": x.has_last_frame}
             for x in DIALECTS.values()]
 
@@ -171,6 +219,10 @@ def render(ep: Any, shot: Any, key: Optional[str] = None) -> Rendered:
     """把一镜翻成某家平台的几段文字。"""
     d = get(key)
     out = Rendered(key=d.key, title=d.title, tip=d.tip)
+    if d.lang == "en" and any((getattr(shot, f, "") or "").strip()
+                             for f in ("image_prompt", "video_prompt")):
+        # 不替用户翻译，但要告诉他"这不是英文"—— 他可能以为我们翻了
+        out.tip += "（当前字段是中文）"
 
     def put(field_key: str, title: str, hint: str, text: str) -> None:
         text, cut = d.fit(text)

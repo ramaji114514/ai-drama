@@ -114,3 +114,49 @@ def test_render_all_covers_every_platform():
     assert set(got) == set(dialects.keys())
     assert got["kling"]["title"] == "可灵"
     assert got["jimeng"]["fields"]
+
+
+def test_hailuo_takes_both_frames_but_has_no_negative_box():
+    """海螺：首尾帧都认，但没有负向框 —— 两件事互不相关，别绑在一起。"""
+    d = dialects.get("hailuo")
+    assert d.has_last_frame is True
+    assert d.has_negative is False
+    shot = _shot()
+    got = dialects.render(None, shot, "hailuo")
+    keys = {f.key for f in got.fields}
+    assert "last_frame" in keys, "海螺认尾帧，别把尾帧也丢掉"
+    assert "negative" not in keys
+    assert any("负向词" in x for x in got.dropped)
+
+
+def test_the_english_ones_drop_the_last_frame_and_say_it_out_loud():
+    """Runway / Veo / Sora 只认首帧：尾帧不能当图给，要写清楚去哪了。"""
+    shot = _shot()
+    for key in ("runway", "veo", "sora"):
+        got = dialects.render(None, shot, key)
+        assert "last_frame" not in {f.key for f in got.fields}, key
+        assert any("尾帧" in x for x in got.dropped), key
+        assert "negative" not in {f.key for f in got.fields}, key
+
+
+def test_english_platforms_admit_the_prompt_is_still_chinese():
+    """不替用户翻译，但也不能让他以为我们翻了。"""
+    got = dialects.render(None, _shot(), "veo")
+    assert "中文" in got.tip
+
+
+def test_every_dialect_is_reachable_from_the_catalog():
+    from ai_drama.core import dialects as mod
+
+    cat = {c["key"]: c for c in mod.catalog()}
+    assert set(cat) == set(mod.keys())
+    for key, item in cat.items():
+        assert item["title"], key
+        assert item["tip"], key  # 下拉框旁边那句话不能是空的
+        assert item["lang"] in ("zh", "en"), key
+
+
+def test_the_four_platforms_people_actually_use_are_all_here():
+    """这条是产品承诺：可灵、即梦、豆包、海螺 —— 四个中文入口一个都不能少。"""
+    for key in ("kling", "jimeng", "seedance", "hailuo"):
+        assert key in dialects.keys(), key

@@ -519,3 +519,18 @@ def test_the_whole_page_survives_a_real_run(workspace: Path, need_ffmpeg: None):
         kf = payload["storyboard"]["scenes"][0]["shots"][0]["keyframe"]["rel"]
         status, body, _ = _get(base + "/media?path=" + kf)
         assert status == 200 and body[:4] == b"\x89PNG"
+
+
+def test_the_storyboard_can_be_taken_away_as_a_table():
+    """制片要的是表格，不是 .txt：一行一镜，列能对着念。"""
+    page = (STATIC_DIR / "app.js").read_text(
+        encoding="utf-8")
+    assert "function exportShotsCsv" in page
+    assert 'onclick="exportShotsCsv()"' in page
+    # 列名要在（少一列，拿表的人就得多问一句）
+    for col in ("场次", "镜号", "景别", "时长秒", "台词", "首帧提示词",
+                "负向词图"):
+        assert col in page, col
+    # 走 Blob，不开服务端写接口 —— 页面仍然只读
+    assert "text/csv;charset=utf-8" in page
+    assert "\\ufeff" in page

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import csv
+import io
 import json
 import os
 import sys
@@ -591,6 +593,37 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+#: 分镜表的列。顺序就是制片那边看表的顺序：先认哪一镜，再看拍什么，
+#: 最后才是提示词 —— 提示词是给做图的人用的，不该抢在最前面。
+SHOT_CSV_COLUMNS = ("场次", "镜号", "景别", "时长秒", "画面", "结束画面", "台词",
+                    "出镜", "首帧提示词", "尾帧提示词", "视频提示词",
+                    "负向词图", "负向词视频")
+
+
+def shots_csv(ep: Any) -> str:
+    """整集分镜表 -> CSV 文本（不含 BOM，调用方决定要不要加）。
+
+    用标准库 `csv` 而不是自己拼逗号：台词里本来就有逗号和引号，
+    手工拼出来的表格在某些行会错列 —— 而**错列的表格没人会去核对**，
+    它就这么被拿去开会了。
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(SHOT_CSV_COLUMNS)
+    for sc in ep.scenes:
+        for sh in sc.shots:
+            writer.writerow([
+                # 表述给人看：镜号从 1 数。库里 episode.json 仍是 0 基，
+                # 想让两者一致的人可以去看 json —— 表格是拿去开会的
+                sc.scene_id, sh.order + 1, sh.framing, f"{sh.duration:.2f}",
+                sh.action, sh.end_action, sh.dialogue,
+                "、".join(sh.characters or []),
+                sh.image_prompt, sh.last_frame, sh.video_prompt,
+                sh.negative_prompt, sh.video_negative,
+            ])
+    return buf.getvalue()
+
+
 def cmd_shots(args: argparse.Namespace) -> int:
     load_env()
     store = open_store(args)
@@ -600,6 +633,17 @@ def cmd_shots(args: argparse.Namespace) -> int:
         return 1
     if args.format == "json":
         print_json(ep.to_dict())
+        return 0
+    if args.format == "csv":
+        text = shots_csv(ep)
+        # Excel 只认带 BOM 的 UTF-8：不带的话中文全是乱码，
+        # 而这个文件的第一用途就是被人双击打开
+        data = "\ufeff" + text
+        if args.out:
+            Path(args.out).write_text(data, encoding="utf-8", newline="")
+            print(f"已写出 {args.out}（{len(ep.shots)} 镜，Excel 可直接打开）")
+        else:
+            sys.stdout.write(data)
         return 0
 
     lines: List[str] = []
@@ -1274,7 +1318,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("shots", help="导出分镜表")
     sp.add_argument("run_id")
-    sp.add_argument("--format", choices=["md", "json"], default="md")
+    sp.add_argument("--format", choices=["md", "json", "csv"], default="md",
+                    help="md（默认）/ json（原始）/ csv（表格，Excel 双击能开）")
     sp.add_argument("--out", help="输出文件（不给就打到 stdout）")
     add_common(sp)
     sp.set_defaults(func=cmd_shots)
