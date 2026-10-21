@@ -76,6 +76,31 @@ def test_every_image_the_docs_show_exists(audit):
     )
 
 
+def test_the_english_readme_is_a_real_translation_not_a_stub():
+    """英文 README 得是同一份东西，不是一句 "see Chinese"。
+
+    英文页最容易烂掉的方式不是写错，是**没人看、慢慢和中文版走散**：中文版加了
+    `--target`、海螺、CSV 导出，英文页还停在上个月。所以这里不比对措辞，只钉
+    三件"走散就一定会暴露"的事实：两种语言互相有链接、英文页引了同一批图、
+    英文页也写了那几条命令。
+    """
+    root = _TOOL.parent.parent
+    zh = (root / "README.md").read_text(encoding="utf-8")
+    en_path = root / "README.en.md"
+    assert en_path.exists(), "README.en.md 不存在"
+    en = en_path.read_text(encoding="utf-8")
+
+    assert "README.en.md" in zh, "中文 README 没有链接到英文版"
+    assert "README.md" in en, "英文 README 没有链接回中文版"
+
+    for image in ("docs/images/web-prompts.jpg", "docs/images/web-dialects.jpg",
+                  "docs/images/web-cost.jpg", "docs/images/pipeline.png"):
+        assert image in zh and image in en, f"图 {image} 只出现在一种语言里"
+
+    for flag in ("--target", "--dialect", "--format csv"):
+        assert flag in zh and flag in en, f"{flag} 只出现在一种语言里"
+
+
 def test_no_capability_is_promised_but_missing(audit):
     """比"文件在不在"更要紧的一层：能力有没有落地。
 

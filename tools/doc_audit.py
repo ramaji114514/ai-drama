@@ -40,6 +40,7 @@ EXTERNAL_REFS = {
 
 DOCS = (
     "README.md",
+    "README.en.md",
     "docs/architecture.md",
     "docs/adding-a-provider.md",
     "docs/making-a-series.md",
