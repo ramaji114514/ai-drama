@@ -421,6 +421,8 @@ def run(ctx: StageContext) -> StageReport:
     todo: List[Shot] = []
     split_shots = 0
     for shot in ctx.episode.shots:
+        if not ctx.wants(shot):
+            continue
         dest = paths.clip(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
         if dest.exists() and dest.stat().st_size > 0 and not ctx.force:
             shot.video = str(dest)

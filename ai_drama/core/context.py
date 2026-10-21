@@ -154,6 +154,17 @@ class StageContext:
     #: 存在的理由只有一个：`ctx.asset()` 记账时要写清楚"谁生成的"，
     #: 而让每个阶段自己把名字传一遍，迟早会有一处抄错。
     stage: str = ""
+    #: 只重跑这几镜（空 = 全部）。网页上改完一镜的提示词后只重出这一镜的图，
+    #: 不必把整集的片子再渲一遍 —— 时间钱都省在"只做改动过的那部分"上。
+    #: 用 shot.label（`sc01/shot_000`），因为那是用户在页面上看到的东西。
+    only_shots: Tuple[str, ...] = ()
+
+    def wants(self, shot: Any) -> bool:
+        """这一镜要不要处理。没指定 only_shots 时永远 True。"""
+        if not self.only_shots:
+            return True
+        label = str(getattr(shot, "label", "") or "")
+        return label in self.only_shots
 
     def log(self, msg: str) -> None:
         if self.verbose:

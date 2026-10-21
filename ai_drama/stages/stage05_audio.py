@@ -124,7 +124,7 @@ def _sfx_for_shot(ctx: StageContext, shot: Shot) -> List[Tuple[str, Any]]:
 def run(ctx: StageContext) -> StageReport:
     report = StageReport(stage="audio")
     ep = ctx.episode
-    talking: List[Shot] = [s for s in ep.shots if s.dialogue.strip()]
+    talking: List[Shot] = [s for s in ep.shots if s.dialogue.strip() and ctx.wants(s)]
 
     report.notes.append(f"{len(talking)} 镜有台词 / 共 {len(ep.shots)} 镜")
     if not talking:
@@ -183,7 +183,7 @@ def run(ctx: StageContext) -> StageReport:
     #
     # 关掉 sfx 时**必须出声**：分镜里写着"门被撞开"，成片里没有那一声，
     # 是那种"一切正常"的缺失 —— 报告里不写就没人会发现。
-    sfx_shots = [s for s in ep.shots if s.sfx]
+    sfx_shots = [s for s in ep.shots if s.sfx and ctx.wants(s)]
     sfx_count = sum(len(s.sfx) for s in sfx_shots)
     if sfx_count:
         if ctx.bundle.sfx is None:

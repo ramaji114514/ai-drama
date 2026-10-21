@@ -153,6 +153,7 @@ function selectSide(el, id) {
 
 async function openRun(runId) {
   selectSide(null, runId);
+  state.runId = runId;
   state.data = await getJSON('/api/runs/' + encodeURIComponent(runId));
   // 资产单独拿一次：它可能有一两百行，塞进 run 的响应里会让每次切 tab 都重传。
   state.assets = await getJSON(
@@ -363,17 +364,25 @@ function exportPrompts() {
 /* 提示词框：定妆照在角色卡上，首帧/尾帧/运镜在每一镜上，同一套渲染。
    这里的 textarea 只是「方便先改再复制」的草稿 —— 页面是只读的，改的东西
    不落盘。要真改就动 episode.json 再 resume（见页面底部那行提示）。 */
-function promptBox(fields) {
+// fields: [标题, 正文, 提示, 字段名?]。第四项存在 + 给了 editLabel，才出现「保存」——
+// 只有「通用」那份是原始字段；可灵/即梦/Seedance 那几份是裁过、去过小标题的
+// 派生文本，把派生文本存回去等于把原稿改坏，所以那几个平台只让复制。
+function promptBox(fields, editLabel) {
   fields = (fields || []).filter(([, v]) => v);
   if (!fields.length) return '';
-  const inner = fields.map(([name, value, hint], i) => `
+  const inner = fields.map(([name, value, hint, field]) => `
     <div class="pf">
       <div class="pfhead"><b>${name}</b><span class="dim">${esc(hint)}</span>
+        ${(editLabel && field) ? `<button class="cp" data-label="${esc(editLabel)}"
+          data-field="${esc(field)}" onclick="savePrompt(this)">保存</button>` : ''}
         <button class="cp" onclick="copyField(this)">复制</button></div>
-      <textarea class="pftext" rows="${Math.min(8, Math.max(3,
+      <textarea class="pftext"${(editLabel && field) ? '' : ' readonly'} rows="${Math.min(8, Math.max(3,
         Math.ceil((value || '').length / 46)))}">${esc(value)}</textarea>
     </div>`).join('');
-  return `<details class="prompts"><summary>提示词（${fields.length} 段，可一键复制）</summary>${inner}</details>`;
+  const tail = editLabel
+    ? '，可以直接改'
+    : '，可一键复制';
+  return `<details class="prompts"><summary>提示词（${fields.length} 段${tail}）</summary>${inner}</details>`;
 }
 
 // 同一镜在不同平台的字段不同（有没有负向框、认不认尾帧图、方括号标题会不会
@@ -383,24 +392,99 @@ function dialectOf(key) {
   return all[key] || all.generic || null;
 }
 
+function rawPrompts(sh) {
+  // 「通用」这一份就是库里的原始五个字段 —— 只有它可编辑：
+  // 其余平台的文本是裁过、去过小标题、合并过负向词的派生结果，
+  // 把派生文本存回去等于把原稿改坏。
+  return promptBox([
+    ['首帧', sh.image_prompt, '拿去做「首帧/参考图」', 'image_prompt'],
+    ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面', 'last_frame'],
+    ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」', 'video_prompt'],
+    ['负向·图（不要什么）', sh.negative_prompt, '粘到「负向提示词」框', 'negative_prompt'],
+    ['负向·视频（别动坏）', sh.video_negative, '视频专用的那一组：变脸、闪烁、跳帧', 'video_negative'],
+  ], sh.label);
+}
+
 function shotPrompts(sh) {
   const d = dialectOf(state.dialect);
   const mine = (sh.dialects || {})[state.dialect];
-  if (!d || !mine) {
-    // 老数据（payload 里还没有 dialects）就退回原来的五段直出，
-    // 不要因为版本错位把提示词整块藏起来。
-    return promptBox([
-      ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
-      ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
-      ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
-      ['负向·图（不要什么）', sh.negative_prompt, '粘到「负向提示词」框'],
-      ['负向·视频（别动坏）', sh.video_negative, '视频专用的那一组：变脸、闪烁、跳帧'],
-    ]);
+  if (state.dialect === 'generic' || !d || !mine) {
+    // 老数据（payload 里还没有 dialects）也走这里，不要因为版本错位
+    // 把提示词整块藏起来。
+    return rawPrompts(sh);
   }
   const fields = (mine.fields || []).map(f => [f.title, f.text, f.hint]);
   const dropped = (mine.dropped || []).length
     ? `<div class="dim drop">${mine.dropped.map(esc).join('<br>')}</div>` : '';
-  return promptBox(fields) + dropped;
+  const note = `<div class="dim drop">这一份是给${esc(d.title)}编排的，只读。
+    要改就切回「通用」，改完再切过来看。</div>`;
+  return promptBox(fields) + dropped + note;
+}
+
+function note(msg, bad) {
+  const el = $('#note') || (() => {
+    const d = document.createElement('div');
+    d.id = 'note'; d.className = 'note';
+    document.body.appendChild(d); return d;
+  })();
+  el.textContent = msg;
+  el.className = 'note show' + (bad ? ' bad' : '');
+  clearTimeout(extra._t);
+  extra._t = setTimeout(() => { el.className = 'note'; }, 4000);
+}
+
+async function savePrompt(btn) {
+  const label = btn.dataset.label, field = btn.dataset.field;
+  const ta = btn.closest('.pf').querySelector('textarea');
+  btn.disabled = true; btn.textContent = '存…';
+  try {
+    const r = await fetch(`/api/runs/${encodeURIComponent(state.runId)}`
+      + `/shots/${encodeURIComponent(label)}/prompt`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, text: ta.value }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    btn.textContent = '已存';
+    note('已存进 episode.json 和库。画面要变，点这一镜上的「重跑这一镜」。');
+  } catch (e) {
+    btn.textContent = '没存上';
+    note('没存上：' + e.message, true);
+  }
+  setTimeout(() => { btn.disabled = false; btn.textContent = '保存'; }, 1800);
+}
+
+async function rerunShot(label) {
+  if (!confirm(`只重跑 ${label}？\n\n会用现在的提示词重新生成这一镜的关键帧。`)) return;
+  try {
+    const r = await fetch(`/api/runs/${encodeURIComponent(state.runId)}/rerun`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels: [label], stages: ['frames'] }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    note(`重跑 ${label} 中……跑完这一页会自己刷新。`);
+    pollJob(j.job.id);
+  } catch (e) {
+    note('没跑起来：' + e.message, true);
+  }
+}
+
+function pollJob(jobId) {
+  const tick = async () => {
+    let j;
+    try {
+      j = await getJSON('/api/jobs/' + encodeURIComponent(jobId));
+    } catch (e) { return; }
+    if (j.state === 'running') { setTimeout(tick, 1500); return; }
+    if (j.state === 'done') {
+      note('重跑完成，正在刷新。');
+      await openRun(state.runId);
+    } else {
+      note('重跑失败：' + (j.error || '看终端里的报错'), true);
+    }
+  };
+  setTimeout(tick, 1200);
 }
 
 function copyField(btn) {
@@ -433,6 +517,8 @@ function shotCard(sh) {
       ${sh.end_action ? `<p class="act dim">结束画面：${esc(sh.end_action)}</p>` : ''}
       ${sh.dialogue ? `<p class="dlg">${esc(sh.dialogue)}</p>` : ''}
       ${shotPrompts(sh)}
+      <div class="row"><button class="cp" onclick="rerunShot('${esc(sh.label)}')"
+        title="只重跑这一镜：用现在的提示词重出关键帧">重跑这一镜</button></div>
       ${sfx ? `<div class="sfx">音效：${sfx}</div>` : ''}
       ${sh.characters && sh.characters.length
         ? `<div class="sfx">出镜：${esc(sh.characters.join('、'))}</div>`

@@ -160,3 +160,13 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
   border: 1px solid var(--line); background: rgba(255,255,255,.02); color: var(--fg); }
 .pftext:focus { outline: none; border-color: var(--dim); background: rgba(255,255,255,.04); }
 .pbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+
+/* 保存后的轻提示：只占一行，不挡内容，4 秒自己走 */
+.note{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:9px 16px;font-size:13px;opacity:0;pointer-events:none;
+  transition:opacity .18s;z-index:40;max-width:min(720px,90vw)}
+.note.show{opacity:1}
+.note.bad{border-color:#b4433a}
+/* 只读的提示词框别看成一堵墙：颜色压暗，光标也说明它不能改 */
+.pftext[readonly]{color:#8d8d8d;cursor:default}

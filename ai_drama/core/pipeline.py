@@ -15,7 +15,7 @@ import json
 import traceback
 from pathlib import Path
 from dataclasses import replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import media, paths
 from .context import Ledger, StageContext, StageReport
@@ -28,7 +28,8 @@ class Pipeline:
     def __init__(self, root: Path, store: Store, bundle, *, budget_usd: float = 0.0,
                  concurrency: int = 3, force: bool = False, verbose: bool = True,
                  strict_qc: bool = True, subtitles: bool = True,
-                 project_id: Optional[str] = None, aspect: str = "9:16"):
+                 project_id: Optional[str] = None, aspect: str = "9:16",
+                 only_shots: Sequence[str] = ()):
         self.root = Path(root)
         self.store = store
         self.bundle = bundle
@@ -44,6 +45,8 @@ class Pipeline:
         #: 要等到看成片才发现。真正的尺寸在 apply_aspect() 里落到 provider 的
         #: caps 上；这里只保存用户写的那个字符串。
         self.aspect = media.normalize_aspect(aspect)
+        #: 只重跑这几镜（网页上"重跑这一镜"用）。空 = 整集。
+        self.only_shots = tuple(only_shots or ())
         #: 本 run 的画面像素尺寸。**在这里就算出来**（而不是等 run() 时），
         #: 因为 `run` 命令要在建 run 之前把它打印出来，而"不支持这个画幅"
         #: 这种错误更该在任何钱花出去之前抛。
@@ -152,6 +155,7 @@ class Pipeline:
             concurrency=self.concurrency, verbose=self.verbose,
             strict_qc=self.strict_qc, subtitles=self.subtitles,
             project=project, frame_size=frame_size,
+            only_shots=self.only_shots,
         )
 
         self.store.update_run(run.run_id, state="running")

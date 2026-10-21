@@ -229,20 +229,48 @@ def test_api_404s_are_json_with_a_reason(workspace: Path):
             assert json.loads(body)["error"]
 
 
-def test_writes_are_refused(workspace: Path):
-    """只读不是"暂时没加"，是这一层就不该有写入口。"""
+def test_only_the_two_write_endpoints_exist(workspace: Path):
+    """写入口只有"改一镜提示词"和"重跑这一镜"，别的一律没有。
+
+    建 run 这条路故意不开：花钱的那条路只留 CLI 的 run / resume 一条，
+    预算闸门和 job_id 台账都在那儿。
+    """
     with serving(workspace) as (base, _app):
         status, body = _post(base + "/api/runs")
-        assert status == 405
-        assert "只读" in json.loads(body)["error"]
+        assert status == 404
+        assert "没有这个接口" in json.loads(body)["error"]
+
+        status, body = _post(base + "/api/runs/run_x/shots/sc01/shot_000/prompt",
+                             json.dumps({"field": "action", "text": "x"}).encode())
+        assert status == 400
+        assert "不允许" in json.loads(body)["error"]
+
+        status, body = _post(base + "/api/runs/run_x/rerun",
+                             json.dumps({"labels": []}).encode())
+        assert status == 400
+        assert "至少给一镜" in json.loads(body)["error"]
 
 
-def test_a_write_with_a_big_body_still_gets_a_clean_405(workspace: Path):
-    """带请求体的写请求也得拿到那个 405 —— 而不是"连接被掐断"。"""
+def test_put_and_delete_are_still_refused(workspace: Path):
+    """没被点名的动词还是 405 —— 这两个没有"顺手也能用"的道理。"""
+    with serving(workspace) as (base, _app):
+        for method in ("PUT", "DELETE"):
+            req = urllib.request.Request(base + "/api/runs", data=b"{}",
+                                         method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    status = r.status
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+            assert status == 405, method
+
+
+def test_a_big_body_still_gets_a_clean_answer(workspace: Path):
+    """带 64KB 请求体的写请求也得拿到一个 JSON —— 而不是"连接被掐断"。"""
     with serving(workspace) as (base, _app):
         status, body = _post(base + "/api/runs", b"x" * 65536)
-        assert status == 405
-        assert "只读" in json.loads(body)["error"]
+        assert status == 404
+        assert json.loads(body)["error"]
 
 
 def test_the_refusal_reads_the_request_body_first(workspace: Path):
@@ -268,7 +296,7 @@ def test_the_refusal_reads_the_request_body_first(workspace: Path):
                 s.recv(1)                      # body 还没发完，服务端不该已经回包
             s.sendall(b"y" * 1000)
             s.settimeout(10)
-            assert b"405" in s.recv(4096)
+            assert b"404" in s.recv(4096)
 
 
 def test_traversal_over_http_is_a_404(workspace: Path):

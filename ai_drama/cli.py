@@ -248,6 +248,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         subtitles=(not getattr(args, "no_subtitles", False)) and _subtitles_wanted(),
         project_id=project_id or None,
         aspect=getattr(args, "aspect", "") or "9:16",
+        only_shots=tuple(getattr(args, "only_shot", None) or ()),
     )
     stages = args.stages.split(",") if args.stages else None
     run = pipe.start(
@@ -1157,6 +1158,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--budget", type=float, default=0.0)
     sp.add_argument("--concurrency", type=int, default=3)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument(
+        "--only-shot", action="append", default=[], metavar="sc01/shot_000",
+        help="只重跑这几镜（可重复）。网页上「重跑这一镜」用的就是它",
+    )
     sp.add_argument(
         "--from-json", action="store_true", dest="from_json",
         help="先把 run 目录里的 episode.json 读回库再跑：手改过台词/时长/景别之后用它",

@@ -86,6 +86,8 @@ def run(ctx: StageContext) -> StageReport:
     todo: List[Shot] = []
 
     for shot in ep.shots:
+        if not ctx.wants(shot):
+            continue
         dest = paths.keyframe(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
         if dest.exists() and not ctx.force:
             ctx.store.update_shot(shot.shot_id, state="done", keyframe=str(dest))
