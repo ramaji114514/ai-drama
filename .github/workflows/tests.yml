@@ -33,18 +33,32 @@ jobs:
           # （零第三方依赖就是它的卖点），setup-python 找不到依赖文件会直接
           # 把整个 job 判失败，连测试都跑不到。
 
-      # 刻意**不**装 ffmpeg：这条道验的就是"没有 ffmpeg 也能用"
+      # 刻意**不**装 ffmpeg：这条道验的就是"没有 ffmpeg 也能用"。
+      # 反过来说，标了 `ffmpeg` 的用例必须真的都标了 —— 有漏标的会在这里露馅。
       - name: 装测试依赖
         run: python -m pip install --upgrade pip pytest pillow
 
       - name: 跑离线套件（跳过标了 ffmpeg 的用例）
-        run: python -m pytest -q -m "not ffmpeg"
+        run: |
+          set -o pipefail
+          python -m pytest -q -m "not ffmpeg" 2>&1 | tee pytest-out.txt
 
       - name: 文档体检
         run: python tools/doc_audit.py
 
       - name: 仓库里没有真 key
         run: python -m pytest -q tests/test_no_secrets.py
+
+      # 日志要登录才看得到，注解是公开的 —— 把失败用例名顶到注解里，
+      # 从外面就能看出是哪几条挂了，不用先要一个 token。
+      - name: 失败用例写进注解
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest-out.txt | head -40 | while IFS= read -r line; do
+            echo "::error title=失败用例::$line"
+          done
+          echo "--- 末尾 40 行 ---"
+          tail -40 pytest-out.txt
 
   with-ffmpeg:
     name: 完整套件（含出片）
@@ -68,9 +82,13 @@ jobs:
         run: python -m pip install --upgrade pip pytest pillow
 
       - name: 跑完整套件
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q 2>&1 | tee pytest-out.txt
 
-      # 失败时把 pytest 的详细输出翻出来，省得只看到一行 FAILED
-      - name: 失败时补一份详细报告
+      - name: 失败用例写进注解
         if: failure()
-        run: python -m pytest -q -x --tb=long 2>&1 | tail -80
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest-out.txt | head -40 | while IFS= read -r line; do
+            echo "::error title=失败用例::$line"
+          done
