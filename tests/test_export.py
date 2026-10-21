@@ -95,3 +95,49 @@ def test_prompts_only_runs_the_two_text_stages():
     body = src[at: src.index("def import_episode_json")]
     assert 'stages=["script", "storyboard"]' in body
     assert "verbose=False" in body
+
+
+# ————————————————————————————————————————----
+# 平台方言（`--dialect`）
+# ————————————————————————————————————————----
+
+
+def test_without_a_dialect_the_bundle_stays_plain():
+    shot = export.bundle(_episode())["scenes"][0]["shots"][0]
+    assert "fields" not in shot and "dropped" not in shot
+    assert export.bundle(_episode())["dialect"] == ""
+
+
+def test_a_dialect_adds_the_boxes_that_platform_actually_has():
+    data = export.bundle(_episode(), dialect="jimeng")
+    shot = data["scenes"][0]["shots"][0]
+    assert data["dialect"] == "jimeng"
+    assert shot["dialect"] == "jimeng"
+    keys_ = [f["key"] for f in shot["fields"]]
+    assert keys_ == ["first_frame", "last_frame", "video"]   # 即梦没有负向框
+    assert any("负向" in d for d in shot["dropped"])
+    # 原文照样留着：截断是有损的，想改还得有原文
+    assert shot["image_prompt"] and shot["negative_prompt"]
+
+
+def test_headings_are_stripped_for_platforms_that_treat_them_as_content():
+    ep = _episode()
+    ep.scenes[0].shots[0].image_prompt = "【参考锁定】画面里的人\n冷青主色调"
+    kling = export.bundle(ep, dialect="kling")["scenes"][0]["shots"][0]
+    assert "【参考锁定】" not in kling["fields"][0]["text"]
+    plain = export.bundle(ep)["scenes"][0]["shots"][0]
+    assert "【参考锁定】" in plain["image_prompt"]
+
+
+def test_an_unknown_dialect_falls_back_to_generic():
+    shot = export.bundle(_episode(), dialect="不存在的平台")["scenes"][0]["shots"][0]
+    assert shot["dialect"] == "generic"
+
+
+def test_the_cli_accepts_a_dialect():
+    from ai_drama import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["prompts", "--idea", "x", "--dialect", "kling"])
+    assert args.dialect == "kling"
+    assert parser.parse_args(["prompts", "--idea", "x"]).dialect == ""

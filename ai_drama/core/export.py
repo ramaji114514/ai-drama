@@ -17,13 +17,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from . import dialects
 from .models import Episode, Shot
 
 VERSION = 1
 
 
-def _shot(shot: Shot) -> Dict[str, Any]:
-    return {
+def _shot(shot: Shot, dialect: str = "") -> Dict[str, Any]:
+    data = {
         "label": shot.label,
         "scene_id": shot.scene_id,
         "order": shot.order,
@@ -40,6 +41,15 @@ def _shot(shot: Shot) -> Dict[str, Any]:
         "negative_prompt": shot.negative_prompt or "",
         "video_negative": shot.video_negative or "",
     }
+    if dialect:
+        # 选了平台就多给一份"按这家的框整理过"的版本。**原样五段照样留着**：
+        # 截断是有损的，用户想改还得有原文可改。
+        rendered = dialects.render(None, shot, dialect)
+        data["dialect"] = rendered.key
+        data["dialect_tip"] = rendered.tip
+        data["fields"] = [f.as_dict() for f in rendered.fields]
+        data["dropped"] = list(rendered.dropped)
+    return data
 
 
 def _character(char: Any) -> Dict[str, Any]:
@@ -53,7 +63,7 @@ def _character(char: Any) -> Dict[str, Any]:
     }
 
 
-def bundle(ep: Episode, *, aspect: str = "") -> Dict[str, Any]:
+def bundle(ep: Episode, *, aspect: str = "", dialect: str = "") -> Dict[str, Any]:
     """整集的提示词包：角色在前，场次/镜头在后。
 
     角色单独提到顶层，是因为**它们不挂在某一镜上** —— 定妆照要先做，
@@ -67,7 +77,7 @@ def bundle(ep: Episode, *, aspect: str = "") -> Dict[str, Any]:
             "title": scene.title or "",
             "location": scene.location or "",
             "time_of_day": scene.time_of_day or "",
-            "shots": [_shot(s) for s in scene.shots],
+            "shots": [_shot(s, dialect) for s in scene.shots],
         })
     return {
         "version": VERSION,
@@ -78,6 +88,7 @@ def bundle(ep: Episode, *, aspect: str = "") -> Dict[str, Any]:
         # 画幅记在 Run.meta 里，Episode 上没有这个字段 —— 由调用方传进来，
         # 缺了就是空串（宁可空着，也不要在这猜一个 9:16）
         "aspect": aspect,
+        "dialect": dialects.get(dialect).key if dialect else "",
         "characters": [_character(c) for c in ep.characters],
         "scenes": scenes,
     }

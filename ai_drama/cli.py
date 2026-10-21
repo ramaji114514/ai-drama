@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .core import assets as assetslib, media, paths, project
+from .core import assets as assetslib, dialects, media, paths, project
 from .core.catalog import KINDS
 from .core.faces import (
     FaceAudit,
@@ -313,7 +313,8 @@ def cmd_prompts(args: argparse.Namespace) -> int:
     if ep is None:
         print("没有 episode（脚本阶段没落盘？）", file=sys.stderr)
         return 2
-    data = export.bundle(ep, aspect=str((run.meta or {}).get("aspect") or ""))
+    data = export.bundle(ep, aspect=str((run.meta or {}).get("aspect") or ""),
+                         dialect=getattr(args, "dialect", "") or "")
 
     out = getattr(args, "json", "") or ""
     if out and out != "-":
@@ -1223,6 +1224,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="归到某部剧下，复用角色与定妆照")
     sp.add_argument("--json", default="", metavar="FILE",
                     help="写到文件；不给就打到 stdout（`-` 同 stdout）")
+    sp.add_argument("--dialect", default="", choices=[""] + list(dialects.keys()),
+                    metavar="PLATFORM",
+                    help="按某家网页端的框整理一遍（"
+                         + "/".join(dialects.keys()) + "）；不给就是通用写法")
     sp.add_argument("--budget", type=float, default=0.0)
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--aspect", default="", metavar="W:H")

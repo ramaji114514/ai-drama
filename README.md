@@ -227,6 +227,17 @@ python run.py prompts --idea "一句话" | jq '.scenes[0].shots[0].image_prompt'
 | `scenes[].shots[].video_prompt` | 运镜 + 动作 + 时长 | 视频提示词框 |
 | `negative_prompt` / `video_negative` | 两条负向词 | 负向提示词框（没有就跳过） |
 
+加 `--dialect` 就按某家网页端的框先整理一遍再给你：
+
+```bash
+python run.py prompts --idea "一句话" --dialect jimeng --json out.json
+# 可选：generic（默认）/ kling / jimeng / seedance
+```
+
+这时每镜会多出 `fields`（这家平台**实际有的**那几个框，超长的已按字数上限截断）
+和 `dropped`（这家没有的字段，连同"为什么省掉"一起写明）。原来的五段照样留着
+—— 截断是有损的，想改还得有原文。
+
 ### 二、让 agent 自己去调（skill 入口）
 
 仓库里带了一份 agent 说明：[`agent/SKILL.md`](agent/SKILL.md)。它写清了什么时候该
