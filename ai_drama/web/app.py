@@ -273,34 +273,48 @@ class WebApp:
     def _file(self, target: Path, range_header: str = "") -> Response:
         """读一个文件，支持 Range（`<video>` 拖动进度条要靠它）。
 
-        整份读进内存：这是本机的单人查看器，一次最多也就几百兆，
-        换成流式要把错误处理和 Range 边界重写一遍，不值。
+        **只读请求的那一段**，不再整份进内存：一集成片几百兆，而 `<video>`
+        拖一下进度条就会发一个 Range 请求 —— 每拖一次读一遍整个文件，
+        内存和磁盘都白挨一遍。做法是 seek 到起点再 read 需要的长度。
         """
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         try:
-            data = target.read_bytes()
+            total = target.stat().st_size
         except OSError:
             return Response(404, b"not found", "text/plain; charset=utf-8")
-        total = len(data)
-        out = Response(200, data, ctype, {"Accept-Ranges": "bytes"})
-        if not range_header.startswith("bytes=") or total == 0:
-            return out
-        spec = range_header[len("bytes="):].split(",")[0].strip()
-        first, _, last = spec.partition("-")
+        if total == 0:
+            return Response(200, b"", ctype, {"Accept-Ranges": "bytes"})
+
+        start, end = 0, total - 1
+        partial = False
+        if range_header.startswith("bytes="):
+            spec = range_header[len("bytes="):].split(",")[0].strip()
+            first, _, last = spec.partition("-")
+            try:
+                if first:
+                    start = int(first)
+                    end = int(last) if last else total - 1
+                else:
+                    start = max(0, total - int(last))
+                    end = total - 1
+            except ValueError:
+                start, end = 0, total - 1        # 头写坏了：整份给，别 500
+            if start > end or start >= total:
+                return Response(416, b"", "text/plain; charset=utf-8",
+                                {"Content-Range": f"bytes */{total}"})
+            end = min(end, total - 1)
+            partial = True
+
         try:
-            if first:
-                start = int(first)
-                end = int(last) if last else total - 1
-            else:
-                start = max(0, total - int(last))
-                end = total - 1
-        except ValueError:
-            return out
-        if start > end or start >= total:
-            return Response(416, b"", "text/plain; charset=utf-8",
-                            {"Content-Range": f"bytes */{total}"})
-        end = min(end, total - 1)
-        return Response(206, data[start:end + 1], ctype, {
+            with target.open("rb") as fh:
+                fh.seek(start)
+                data = fh.read(end - start + 1)
+        except OSError:
+            return Response(404, b"not found", "text/plain; charset=utf-8")
+
+        if not partial:
+            return Response(200, data, ctype, {"Accept-Ranges": "bytes"})
+        return Response(206, data, ctype, {
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{total}",
         })

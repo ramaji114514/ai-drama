@@ -763,6 +763,11 @@ async function getJSON(url) {
   if (!res.ok) {
     let msg = text;
     try { msg = JSON.parse(text).error || text; } catch (e) { /* 原样显示 */ }
+    // 报错必须**自己把内容区亮出来**：进页面失败时 #content 还是 hidden、
+    // #empty 还显示着，把错误卡写进一个隐藏的容器等于什么都不显示 ——
+    // 用户看到的是"页面上一片空白"，而真正的原因写在看不见的地方。
+    $('#empty').hidden = true;
+    $('#content').hidden = false;
     $('#content').innerHTML =
       `<div class="card" style="border-color:var(--bad)"><b style="color:var(--bad)">` +
       `请求失败（${res.status}）</b><pre style="margin:8px 0 0">${esc(msg)}</pre></div>`;

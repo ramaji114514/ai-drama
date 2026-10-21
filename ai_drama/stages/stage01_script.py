@@ -265,6 +265,22 @@ def _parse(text: str) -> Dict[str, Any]:
     )
 
 
+def _order_of(sh: Dict[str, Any], fallback: int) -> int:
+    """模型写的 `order` 可能不是数字。
+
+    这里**不抛异常**：一镜的序号写坏，不该让整集报废 —— 用它在数组里的位置
+    顶上，顺序仍然是对的。`int("1st")` 会让整条流水线停在这里，而错因在
+    四百行外的提示词里。
+    """
+    try:
+        return int(sh.get("order", fallback))
+    except (TypeError, ValueError):
+        try:
+            return int(str(sh.get("order", "")).strip().split(".")[0])
+        except (TypeError, ValueError):
+            return fallback
+
+
 def _cast_of(sh: Dict[str, Any]) -> Optional[List[str]]:
     """这一镜的出镜角色。**None 和 [] 必须分开**：
 
@@ -358,7 +374,13 @@ def _fill_end_actions(ctx: StageContext, shots: List[Shot]) -> Tuple[int, float]
     ctx.ledger.add(usage, stage="script")
     money = float(usage.get("money") or 0)
 
-    data = _parse(text)
+    try:
+        data = _parse(text)
+    except ProviderError as exc:
+        # 补丁没打上，不能把整集拖下水：剧本本身是好的，缺的只是尾帧。
+        # 钱已经花了（上面已记账），所以这里返回 money 而不是 0。
+        ctx.log(f"[script] 补尾帧的回复读不懂：{exc}")
+        return 0, money
     rows = data.get("end_actions") or []
     by_key: Dict[Tuple[str, int], str] = {}
     for row in rows:
@@ -419,7 +441,7 @@ def _to_episode(ctx: StageContext, payload: Dict[str, Any]) -> Episode:
         for oi, sh in enumerate(sc.get("shots", []) or []):
             shot = Shot(
                 scene_id=scene.scene_id,
-                order=int(sh.get("order", oi)),
+                order=_order_of(sh, oi),
                 action=sh.get("action", ""),
                 end_action=sh.get("end_action", "") or "",
                 dialogue=sh.get("dialogue", "") or "",

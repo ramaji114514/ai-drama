@@ -70,8 +70,36 @@ _NEG_MOTION = ("人物变脸", "五官漂移", "肢体扭曲", "多余人物", "
 _FRAMING_WORDS = ("特写", "近景", "中景", "全景", "远景", "俯拍", "仰拍", "航拍")
 
 
+def _prompts_look_stale(shot: Shot) -> bool:
+    """提示词还是不是按照现在的 action 写出来的。
+
+    以前只判 `not shot.image_prompt`：一旦拼过一次就永远不再拼，于是手改
+    `episode.json` 里的动作/景别再 resume，提示词还是旧的 —— 页面显示新动作、
+    出图还是老画面，这是最难查的那种"看起来生效了"。
+
+    判据很保守：只认"现在的动作文字没有出现在提示词里"。网页上改过的提示词
+    （哪怕改得和动作无关）不会被这条判据掀掉，因为动作原文还在里面。
+    """
+    if not (shot.image_prompt or "").strip():
+        return True
+    head = _tidy(shot.action or "")
+    if not head:
+        return False
+    probe = head[:12]
+    return probe not in _tidy(shot.image_prompt)
+
+
 def _action_already_names_framing(action: str) -> bool:
-    head = (action or "")[:16]
+    """action 开头那一小句是不是已经交代了景别。
+
+    看的是**第一个小句**（逗号/句号/冒号之前），不是固定字数：
+    "俯拍全景：雨水在霓虹招牌上炸开" 里的景别在寸步之内，而
+    "他把伞收起来，抬头看着招牌，镜头缓缓推成特写" 里的"特写"是动作的
+    一部分、不是取景指令 —— 固定取前 16 字两头都会判错，短句漏、长句冤。
+    """
+    head = (action or "").strip()
+    for sep in ("，", ",", "。", "；", ";", "：", ":"):
+        head = head.split(sep)[0]
     return any(w in head for w in _FRAMING_WORDS)
 
 
@@ -239,8 +267,13 @@ def unlocked_names(ep, shot: Shot, max_refs: int = 1) -> List[str]:
     模型唯一的线索是"这里有个有名字的人"，它会现造一张脸，而且每个镜头造得
     都不一样 —— 成片里看起来像人物漂移，其实是没告诉他这人长什么样。
     """
-    found = [c for c in characters_in_shot(ep, shot) if c.ref_image]
-    return [c.name for c in found[max(0, max_refs):]]
+    chars = characters_in_shot(ep, shot)
+    locked = [c for c in chars if c.ref_image][: max(0, max_refs)]
+    locked_names_ = {id(c) for c in locked}
+    # **没有定妆照的角色也要算进来**：它才是最需要"文字描述"声明的那个人。
+    # 只筛 `c.ref_image` 等于把"根本锁不了脸的人"从提示词里整个漏掉，
+    # 而模型这时连一个"这个人长什么样"的线索都没有。
+    return [c.name for c in chars if id(c) not in locked_names_]
 
 
 def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
@@ -440,7 +473,7 @@ def run(ctx: StageContext) -> StageReport:
         # 跟着消失，否则它就变成"只要模型不写就永远不报警"——比没有还糟。
         if len(characters_on_screen(ep, shot)) > max_refs:
             crowded += 1
-        if not shot.image_prompt or ctx.force:
+        if _prompts_look_stale(shot) or ctx.force:
             unlocked = unlocked_names(ep, shot, max_refs)
             shot.image_prompt = compose_image_prompt(ep, shot, labels, unlocked)
             shot.video_prompt = compose_video_prompt(shot)

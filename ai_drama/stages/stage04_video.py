@@ -188,14 +188,19 @@ def _recover_timeout(shot: Shot) -> float:
     return 180.0
 
 
-def _cleanup_parts(ctx: StageContext, shot: Shot) -> None:
-    """一个镜头中途失败时，把它已经渲好的分段删掉。
+def _cleanup_parts(ctx: StageContext, shot: Shot, *, after: int = 0) -> None:
+    """删掉第 `after` 段**之后**的分段。
 
-    为什么不留着：分段只有在**全部齐全且拼接过**之后才构成一个完整镜头。
-    留着半套分段会让下一次 resume 看起来"有东西了"，但它们拼不出正确时长 ——
-    这正是"半成品被当成成品"的典型形态。宁可全部重渲，也不要一部时长对的坏片。
+    不整镜全删：第 1..after 段是这次已经付过钱、渲染完整的文件，删掉它们
+    等于保证下次再付一遍。而 `after` 之后的分段来自更早的尝试，这一镜的
+    提示词/时长可能已经变了，留着才是真的"半成品被当成成品"。
+
+    所以失败时传 `after=idx`：保住这一镜已渲好的，丢掉后面可能过期的。
     """
-    for p in paths.clip_parts(ctx.root, ctx.run.run_id, shot.scene_id, shot.order):
+    for i, p in enumerate(paths.clip_parts(ctx.root, ctx.run.run_id,
+                                           shot.scene_id, shot.order), start=1):
+        if i <= after:
+            continue
         try:
             p.unlink()
         except OSError:
@@ -226,7 +231,7 @@ def _chain_frame(ctx: StageContext, shot: Shot, idx: int) -> Optional[Path]:
     if not prev.exists() or prev.stat().st_size == 0:
         return None
     try:
-        work = paths.work_dir(ctx.root, ctx.run.run_id)
+        work = paths.work_dir(ctx.root, ctx.run.run_id, shot.scene_id)
     except Exception:                                 # noqa: BLE001
         work = prev.parent
     out = work / f"chain_{shot.scene_id}_{shot.order}_{idx}.png"
@@ -291,7 +296,7 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
             job_id = _submit_one(ctx, shot, idx, total, duration, part_path,
                                  chain_from=_chain_frame(ctx, shot, idx))
         except Exception as exc:                      # noqa: BLE001
-            _cleanup_parts(ctx, shot)
+            _cleanup_parts(ctx, shot, after=idx - 1)
             ctx.heal_shot(shot, exc)
             return ("failed", {}, f"submit p{idx}/{total}: {type(exc).__name__}: {exc}")
 
@@ -318,13 +323,14 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
                 msg = f"p{idx}/{total}: {info}"
                 job_ids.pop(key, None)
                 ctx.store.update_shot(shot.shot_id, job_ids=job_ids)
-                _cleanup_parts(ctx, shot)
+                # 保住 p1..p{idx}：它们已经付过钱且完整，resume 只补这一段
+                _cleanup_parts(ctx, shot, after=idx)
             ctx.store.update_shot(shot.shot_id, state="failed", error=msg[:800])
             return ("failed", _merge_usage(part_usages), msg)
         if not Path(info).exists():
             # 厂商说成功但文件不在：这是**终局**，留 job_id 没有意义
             job_ids.pop(key, None)
-            _cleanup_parts(ctx, shot)
+            _cleanup_parts(ctx, shot, after=idx - 1)
             msg = f"provider 返回成功但产物不存在：{info}"
             ctx.store.update_shot(shot.shot_id, state="failed", error=msg,
                                   job_ids=job_ids)
@@ -332,7 +338,7 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
         try:
             _move_into_place(Path(info), part_path)
         except OSError as exc:
-            _cleanup_parts(ctx, shot)
+            _cleanup_parts(ctx, shot, after=idx - 1)
             ctx.heal_shot(shot, exc)
             return ("failed", _merge_usage(part_usages), f"落盘失败：{exc}")
         # 这一段已经落盘，任务结算完毕
@@ -350,8 +356,8 @@ def _render_shot(ctx: StageContext, shot: Shot) -> Tuple[str, Dict[str, Any], st
         parts = paths.clip_parts(ctx.root, ctx.run.run_id, shot.scene_id, shot.order)
         if total > 1:
             if len(parts) != total:
-                msg = f"分段不全：应有 {total} 段，实际 {len(parts)} 段"
-                _cleanup_parts(ctx, shot)
+                msg = (f"分段不全：应有 {total} 段，实际 {len(parts)} 段。"
+                       f"已渲好的分段都留着，resume 只会补缺的那几段")
                 ctx.store.update_shot(shot.shot_id, state="failed", error=msg)
                 return ("failed", _merge_usage(part_usages), msg)
             # 拼到工作目录里，成功了再原子搬进正式位置。

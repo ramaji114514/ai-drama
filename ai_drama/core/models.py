@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -175,7 +175,39 @@ class Shot:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Shot":
-        return cls(**{k: d.get(k) for k in cls.__dataclass_fields__})
+        """读一镜。**缺字段给默认值，不给 None。**
+
+        手改 `episode.json` 时少写一行（比如老文件里没有 `negative_prompt`）
+        会让拼提示词时炸成 `TypeError: unsupported operand type(s) for +:
+        'NoneType' and 'str'` —— 那句话指不到"少了一个键"这个真正的原因。
+        """
+        out: Dict[str, Any] = {}
+        for f in fields(cls):
+            if f.name in d:
+                value = d[f.name]
+            elif f.default is not MISSING:
+                value = f.default
+            elif f.default_factory is not MISSING:      # type: ignore[misc]
+                value = f.default_factory()             # type: ignore[misc]
+            else:
+                value = None
+            # 显式的 null 也按缺失处理：手写 json 里 `"sfx": null` 比不写更常见
+            if value is None and f.default is not MISSING:
+                value = f.default
+            out[f.name] = value
+
+        # 类型兜底：手写的 json 里 order 可能是 "1"，duration 可能是 ""。
+        try:
+            out["order"] = int(out.get("order") or 0)
+        except (TypeError, ValueError):
+            out["order"] = 0
+        try:
+            out["duration"] = float(out.get("duration") or 4.0)
+        except (TypeError, ValueError):
+            out["duration"] = 4.0
+        if not isinstance(out.get("sfx"), list):
+            out["sfx"] = []
+        return cls(**out)
 
 
 @dataclass
