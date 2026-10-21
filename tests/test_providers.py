@@ -187,7 +187,8 @@ def _public_methods(obj: Any) -> List[str]:
     return out
 
 
-def test_video_provider_submit_poll_contract(workspace: Path):
+@pytest.mark.ffmpeg
+def test_video_provider_submit_poll_contract(workspace: Path, need_ffmpeg):
     """submit 拿 id、poll 查状态 —— 换了任何厂商这条都不能变。"""
     bundle = registry.build_bundle()
     job = bundle.video.submit({"prompt": "测试", "duration": 3.0, "dest": str(workspace / "a.mp4")})

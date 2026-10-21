@@ -225,7 +225,8 @@ def test_the_effect_is_actually_in_the_film(workspace, need_ffmpeg):
     assert loud > quiet + 3, f"音效没有进成片（关 {quiet}dB / 开 {loud}dB）"
 
 
-def test_effects_alone_are_still_mixed(workspace, tmp_path):
+@pytest.mark.ffmpeg
+def test_effects_alone_are_still_mixed(workspace, tmp_path, need_ffmpeg):
     """没有台词、只有音效时也要走混音。
 
     原来那段代码是 `if not segments: 直接和 BGM 混（或原样拷贝）` ——

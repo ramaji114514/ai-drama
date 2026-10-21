@@ -38,7 +38,8 @@ def ctx(tmp_path: Path):
     return SimpleNamespace(root=tmp_path, run=run)
 
 
-def test_the_second_part_starts_on_the_last_frame_of_the_first(ctx, monkeypatch):
+@pytest.mark.ffmpeg
+def test_the_second_part_starts_on_the_last_frame_of_the_first(ctx, monkeypatch, need_ffmpeg):
     shot = SimpleNamespace(scene_id="sc01", order=1)
     first = _clip(paths.clip_part(ctx.root, ctx.run.run_id, "sc01", 1, 1),
                   seconds=1.0, color="red")
@@ -60,7 +61,8 @@ def test_the_first_part_has_no_previous_frame_to_chain_from(ctx):
     assert stage04_video._chain_frame(ctx, SimpleNamespace(scene_id="sc01", order=1), 1) is None
 
 
-def test_a_missing_previous_part_degrades_instead_of_exploding(ctx, monkeypatch):
+@pytest.mark.ffmpeg
+def test_a_missing_previous_part_degrades_instead_of_exploding(ctx, monkeypatch, need_ffmpeg):
     """上一段不存在（比如被人删了）时返回 None，调用方退回镜头关键帧。
 
     宁可安静地穿帮，也不要让整镜失败 —— 因为钱已经花了。
