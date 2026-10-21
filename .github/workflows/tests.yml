@@ -29,7 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
+          # 不写 cache: pip —— 这个仓库没有 requirements.txt/pyproject.toml
+          # （零第三方依赖就是它的卖点），setup-python 找不到依赖文件会直接
+          # 把整个 job 判失败，连测试都跑不到。
 
       # 刻意**不**装 ffmpeg：这条道验的就是"没有 ffmpeg 也能用"
       - name: 装测试依赖
@@ -53,7 +55,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+          # 同上：没有依赖文件，就不开 pip 缓存
 
       - name: 装 ffmpeg
         run: |
