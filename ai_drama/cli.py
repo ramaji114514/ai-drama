@@ -271,6 +271,67 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result["state"] == "done" else 2
 
 
+def cmd_prompts(args: argparse.Namespace) -> int:
+    """一句话 → 提示词包。只跑 script + storyboard，一台图模型都不碰。
+
+    存在的理由是**给别的程序用**：agent 要的是一段能 `json.load` 的文本，
+    不是一张带小标题的漂亮页面。所以这条命令默认把 JSON 打到 stdout，
+    进度写 stderr —— 管道不会因为"阶段报告"混进来而解不开。
+
+    出图/出片是另一回事：这里一个 provider 调用（除文本模型外）都不会发生，
+    定妆照和关键帧全是占位。想要的图在 `run.py resume <id> --stages frames`。
+    """
+    from .core import export
+
+    load_env()
+    store = open_store(args)
+    root = Path(args.root).resolve() if getattr(args, "root", None) else Path.cwd()
+    bundle_providers = registry.build_bundle()
+    pipe = Pipeline(
+        root, store, bundle_providers,
+        budget_usd=args.budget, concurrency=1,
+        force=args.force, verbose=False,
+        strict_qc=False,
+        subtitles=False,
+        project_id=(getattr(args, "project", "") or "").strip() or None,
+        aspect=getattr(args, "aspect", "") or "9:16",
+    )
+    run = pipe.start(
+        args.idea,
+        style=args.style or "",
+        scenes=args.scenes,
+        shots_per_scene=args.shots,
+        voice=args.voice,
+    )
+    # 只跑这两个阶段：提示词在这里就齐了，后面的阶段是花钱的
+    result = pipe.run(run, stages=["script", "storyboard"])
+    if result.get("state") == "failed":
+        print(f"没跑成：{result.get('error') or '见上面的报告'}", file=sys.stderr)
+        return 2
+
+    ep = store.get_episode(run.run_id)
+    if ep is None:
+        print("没有 episode（脚本阶段没落盘？）", file=sys.stderr)
+        return 2
+    data = export.bundle(ep, aspect=str((run.meta or {}).get("aspect") or ""))
+
+    out = getattr(args, "json", "") or ""
+    if out and out != "-":
+        dest = Path(out)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8", newline="\n")
+        shots = sum(len(sc["shots"]) for sc in data["scenes"])
+        print(f"拿到 {len(data['characters'])} 个角色、{len(data['scenes'])} 场 "
+              f"{shots} 镜的提示词 → {dest}", file=sys.stderr)
+        print(f"run {run.run_id}", file=sys.stderr)
+    else:
+        # stdout 只有 JSON：管道那头 `| jq .` 直接能用
+        print(json.dumps(data, ensure_ascii=True, indent=2))
+        print(f"run {run.run_id}", file=sys.stderr)
+    return 0
+
+
 def import_episode_json(root: Path, store: Any, run_id: str) -> Optional[int]:
     """把 run 目录里的 `episode.json` 读回库。返回镜头数，文件不存在返回 None。
 
@@ -1151,6 +1212,22 @@ def build_parser() -> argparse.ArgumentParser:
                          "模型不支持时当场报错，不会偷偷按竖屏渲")
     add_common(sp)
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("prompts", help="一句话 → 提示词包（JSON；只跑剧本+分镜）")
+    sp.add_argument("--idea", required=True, help="一句话想法")
+    sp.add_argument("--style", default="", help="视觉风格（可选）")
+    sp.add_argument("--scenes", type=int, default=2, help="场次数（默认 2）")
+    sp.add_argument("--shots", type=int, default=2, help="每场镜头数（默认 2）")
+    sp.add_argument("--voice", default="female_01", help="配音音色（不影响提示词）")
+    sp.add_argument("--project", default="", metavar="PROJECT_ID",
+                    help="归到某部剧下，复用角色与定妆照")
+    sp.add_argument("--json", default="", metavar="FILE",
+                    help="写到文件；不给就打到 stdout（`-` 同 stdout）")
+    sp.add_argument("--budget", type=float, default=0.0)
+    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--aspect", default="", metavar="W:H")
+    add_common(sp)
+    sp.set_defaults(func=cmd_prompts)
 
     sp = sub.add_parser("resume", help="断点续跑")
     sp.add_argument("run_id")

@@ -168,6 +168,7 @@ python run.py web                     # 网页：分镜 / 时间轴 / 质检 / �
 | --- | --- |
 | `project new <名字>` | 建一部剧（角色圣经 + 风格，跨集复用） |
 | `run "<一句话>"` | 跑一条流水线 |
+| `prompts --idea "<一句话>"` | 只产提示词，打成 JSON 给脚本/agent 用 |
 | `resume <run_id>` | 断点续跑，只跑还没做的部分 |
 | `status <run_id>` | 逐镜进度 |
 | `shots <run_id>` | 导出分镜表（`--format md` / `json`） |
@@ -194,6 +195,29 @@ python run.py run "一句话" \
 * `--stages`：只跑这几步；只拿提示词就写 `script,storyboard,frames`
 * `--budget`：预算上限（美元），超了当场停
 * `--force`：忽略缓存全部重跑
+
+---
+
+## 给脚本和 agent 用
+
+网页是给人看的。要让**别的程序**拿提示词，用 `prompts`：它只跑"剧本 + 分镜"
+两步，一台图模型都不碰，产出是一段能直接 `json.load` 的文本。
+
+```bash
+python run.py prompts --idea "深夜便利店，店员发现每个客人都买同一件东西" \
+  --scenes 2 --shots 2 --json out.json
+
+python run.py prompts --idea "一句话" | jq '.scenes[0].shots[0].image_prompt'
+```
+
+不给 `--json` 就打到 stdout（进度写 stderr，管道不会脏）。字段：
+`characters[].anchor_prompt`（定妆照）、`scenes[].shots[]` 里的 `image_prompt`
+（首帧）、`last_frame`（尾帧）、`video_prompt`（运镜）、`negative_prompt` /
+`video_negative`（两条负向词）。整集的花费只来自文本模型，一集通常不到一分钱。
+
+仓库里带了一份给 agent 的说明：[`agent/SKILL.md`](agent/SKILL.md) ——
+放 `~/.claude/skills/` 或 `.agents/skills/` 下，agent 就知道什么时候该调它、
+粘提示词时要注意什么。
 
 ---
 
