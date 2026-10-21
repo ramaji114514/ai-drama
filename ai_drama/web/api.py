@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 from .. import __version__
 from ..core import assets as assetslib
+from ..core import dialects
 from ..core import paths
 from ..core import project as projectlib
 
@@ -220,6 +221,10 @@ def _shot_payload(root: Path, run_id: str, scene_id: str, shot: Any,
         # 只给正向等于让用户自己再编一遍 —— 而他手里没有这一镜的角色锚点。
         "negative_prompt": getattr(shot, "negative_prompt", ""),
         "video_negative": getattr(shot, "video_negative", ""),
+        # 各家网页端的字段不同（有没有负向框、认不认尾帧图、方括号标题会不会
+        # 被当成画面内容），所以同一镜在这里预渲染成几份方言，页面切换即可，
+        # 不用把判断散进前端 JS。
+        "dialects": dialects.render_all(None, shot),
         "duration": float(getattr(shot, "duration", 0.0) or 0.0),
         "characters": list(getattr(shot, "characters", None) or []),
         "declared": getattr(shot, "characters", None) is not None,
@@ -252,6 +257,8 @@ def storyboard_payload(root: Path, store: Any, run_id: str, ep: Any) -> Dict[str
         "title": ep.title,
         "logline": ep.logline,
         "style": ep.style,
+        # 目标平台有哪些、各自字段差异是什么，一次带给页面，免得前端硬编码
+        "dialects": dialects.catalog(),
         "idea": ep.idea,
         "created_at": ep.created_at,
         "characters": [

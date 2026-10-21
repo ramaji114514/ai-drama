@@ -54,7 +54,8 @@ function fileLink(ref) {
 
 const mediaURL = (ref) => (ref && ref.exists ? esc(ref.url) : '');
 
-const state = { runs: [], projects: [], data: null, tab: 'storyboard', asset: null };
+const state = { runs: [], projects: [], data: null, tab: 'storyboard', asset: null,
+                dialect: 'generic', dialects: {} };
 
 /* ————————————————————————————————— 路由 ————————————————————————————————— */
 /* `#/run/<id>[/<tab>]` 或 `#/project/<id>`。
@@ -158,6 +159,10 @@ async function openRun(runId) {
     `/api/runs/${encodeURIComponent(runId)}/assets`).then((r) => r.assets)
     .catch(() => []);
   state.tab = state.tab || 'storyboard';
+  // 目标平台记在内存里（刷新回到通用）：这是"给谁写的"，不是 run 的属性。
+  state.dialects = Object.fromEntries(
+    (((state.data || {}).storyboard || {}).dialects || []).map((x) => [x.key, x]));
+  if (!state.dialects[state.dialect]) state.dialect = 'generic';
   $('#empty').hidden = true;
   $('#content').hidden = false;
   renderRun();
@@ -280,8 +285,15 @@ function tabStoryboard(d) {
       <span class="dim">${esc(sc.location || '')} ${esc(sc.time_of_day || '')}</span>
       <span class="dim">${sc.shots.length} 镜</span></div>
     <div class="shots">${sc.shots.map(shotCard).join('')}</div></div>`).join('');
+  const opts = Object.values(state.dialects || {});
   const bar = `<div class="pbar">
       <button class="cp" onclick="exportPrompts()">导出全部提示词</button>
+      ${opts.length ? `<label class="dim">粘贴到
+        <select id="dialect" onchange="state.dialect=this.value; renderTab()">
+          ${opts.map((o) => `<option value="${esc(o.key)}"${o.key === state.dialect
+            ? ' selected' : ''}>${esc(o.title)}</option>`).join('')}
+        </select></label>
+        <span class="dim">${esc((dialectOf(state.dialect) || {}).tip || '')}</span>` : ''}
       <span class="dim">整集的定妆照 + 每镜首帧/尾帧/运镜，一键存成 .txt</span>
     </div>`;
   return bar + cast + scenes +
@@ -297,7 +309,8 @@ function exportPrompts() {
   if (!sb) return;
   const out = [];
   const line = (s) => out.push(s == null ? '' : String(s));
-  line(`# ${sb.title || '未命名'} — 提示词`);
+  const d = dialectOf(state.dialect);
+  line(`# ${sb.title || '未命名'} — 提示词${d ? '（粘贴到：' + d.title + '）' : ''}`);
   if (sb.style) line(`\n风格：${sb.style}`);
   if ((sb.characters || []).length) {
     line('\n## 角色定妆照');
@@ -315,13 +328,22 @@ function exportPrompts() {
       if ((sh.characters || []).length) bits.push('出镜 ' + sh.characters.join('、'));
       line('\n### ' + bits.filter(Boolean).join(' · '));
       if (sh.dialogue) line(`台词：${sh.dialogue}`);
-      if (sh.image_prompt) line(`\n【首帧】\n${sh.image_prompt}`);
-      if (sh.last_frame) line(`\n【尾帧】\n${sh.last_frame}`);
-      if (sh.video_prompt) line(`\n【运镜】\n${sh.video_prompt}`);
-      // 负向词单独成段：视频模型的粘贴框是「正向一个、负向一个」，
-      // 混在一段里用户还得自己切，切错了正向里就多了几个"不要"。
-      if (sh.negative_prompt) line(`\n【负向·图】\n${sh.negative_prompt}`);
-      if (sh.video_negative) line(`\n【负向·视频】\n${sh.video_negative}`);
+      // 导出的就是"要粘进去的那几段"，所以跟着当前选的目标平台走：
+      // 没有负向框的平台不该在文件里留一段用不上的负向词，
+      // 让人以为漏粘了；被丢掉的段落改在文件里注明原因。
+      const mine = (sh.dialects || {})[state.dialect];
+      if (mine) {
+        (mine.fields || []).forEach((f) => {
+          line(`\n【${f.title}】\n${f.text}`);
+        });
+        (mine.dropped || []).forEach((why) => line(`\n（${why}）`));
+      } else {
+        if (sh.image_prompt) line(`\n【首帧】\n${sh.image_prompt}`);
+        if (sh.last_frame) line(`\n【尾帧】\n${sh.last_frame}`);
+        if (sh.video_prompt) line(`\n【运镜】\n${sh.video_prompt}`);
+        if (sh.negative_prompt) line(`\n【负向·图】\n${sh.negative_prompt}`);
+        if (sh.video_negative) line(`\n【负向·视频】\n${sh.video_negative}`);
+      }
     });
   });
   const text = out.join('\n') + '\n';
@@ -354,16 +376,31 @@ function promptBox(fields) {
   return `<details class="prompts"><summary>提示词（${fields.length} 段，可一键复制）</summary>${inner}</details>`;
 }
 
+// 同一镜在不同平台的字段不同（有没有负向框、认不认尾帧图、方括号标题会不会
+// 被当成画面内容），这份预渲染在后端做好了，前端只负责按选择切换。
+function dialectOf(key) {
+  const all = (state.dialects || {});
+  return all[key] || all.generic || null;
+}
+
 function shotPrompts(sh) {
-  return promptBox([
-    ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
-    ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
-    ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
-    ['负向·图（不要什么）', sh.negative_prompt,
-      '粘到「负向提示词」框。别塞进正向 —— 正向里每个名词都会被当成要画的东西'],
-    ['负向·视频（别动坏）', sh.video_negative,
-      '视频专用的那一组：变脸、闪烁、跳帧。图生视频和首帧图各用各的'],
-  ]);
+  const d = dialectOf(state.dialect);
+  const mine = (sh.dialects || {})[state.dialect];
+  if (!d || !mine) {
+    // 老数据（payload 里还没有 dialects）就退回原来的五段直出，
+    // 不要因为版本错位把提示词整块藏起来。
+    return promptBox([
+      ['首帧', sh.image_prompt, '拿去做「首帧/参考图」'],
+      ['尾帧', sh.last_frame, '拿去做「尾帧/结束帧」——空的话说明这一镜模型没写结束画面'],
+      ['运镜', sh.video_prompt, '拿去做「画面描述/运镜」'],
+      ['负向·图（不要什么）', sh.negative_prompt, '粘到「负向提示词」框'],
+      ['负向·视频（别动坏）', sh.video_negative, '视频专用的那一组：变脸、闪烁、跳帧'],
+    ]);
+  }
+  const fields = (mine.fields || []).map(f => [f.title, f.text, f.hint]);
+  const dropped = (mine.dropped || []).length
+    ? `<div class="dim drop">${mine.dropped.map(esc).join('<br>')}</div>` : '';
+  return promptBox(fields) + dropped;
 }
 
 function copyField(btn) {
