@@ -38,6 +38,30 @@ LENS: Dict[str, str] = {
 }
 DEFAULT_LENS = "35mm，中景深，自然光"
 
+#: 机位高度。只写景别不写高度，模型默认给一张"平视、眼睛在画面正中"的证件照；
+#: 而故事感有一半来自高度差 —— 俯看让环境压在人身上，仰看让人压住环境。
+CAMERA_HEIGHT: Dict[str, str] = {
+    "establishing": "机位略高，俯看环境",
+    "wide": "平视机位，与人物胸口齐高",
+    "medium": "平视机位，与人物眼睛齐高",
+    "close": "机位略低于眼位，微微仰拍",
+    "extreme_close": "机位贴近主体，平视",
+}
+DEFAULT_HEIGHT = "平视机位"
+
+#: 画面是"某一瞬间"。模型默认会给一点运动模糊（它以为这样更"动感"），
+#: 而首帧/尾帧要的是**定格** —— 模糊会让参考图失去清晰边缘，图生视频跟着糊。
+STILL_FRAME = "画面是一帧定格瞬间，边缘清晰，没有运动模糊"
+
+def height_clause(framing: str) -> str:
+    """景别 -> 机位高度一句话。"""
+    return CAMERA_HEIGHT.get(framing, DEFAULT_HEIGHT)
+
+
+
+def still_clause() -> str:
+    return STILL_FRAME
+
 #: 运镜要在几秒内才做得完。数字不是物理定律，是"看起来不赶"的经验下限：
 #: 一次横移要让观众看清环境变化，三秒以内只会糊成一片。
 MOVE_MIN_SECONDS: Dict[str, float] = {

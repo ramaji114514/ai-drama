@@ -66,7 +66,11 @@ NEGATIVE = "文字, 字幕, 水印, 畸形手指, 多手多脚, 面部崩坏, �
 _NEG_ANATOMY = ("畸形手指", "多余手指", "多手多脚", "肢体重复", "五官错位",
                 "面部崩坏", "皮肤塑料感")
 _NEG_LAYOUT = ("文字", "字幕", "水印", "logo", "签名", "边框", "分屏")
-_NEG_QUALITY = ("低分辨率", "模糊", "过曝", "噪点", "色块")
+_NEG_QUALITY = ("低分辨率", "模糊", "过曝", "噪点", "色块", "鬼影", "摩尔纹")
+#: 风格塌陷。这一组的共同点是"技术上没坏，但一眼看去像廉价 3D 宣传图" ——
+#: 社区模板里这一组最有效，也最容易被漏掉（大家都只写手和脸）。
+_NEG_STYLE = ("塑料皮肤", "过度 CG 渲染", "游戏引擎感", "3D 卡通", "过饱和",
+              "锐化过度", "蜡像感")
 #: 视频专属。坏在**时间维度**上，静态图里根本不会有这几类事故，
 #: 混进图片负向里就只是噪声。
 _NEG_MOTION = ("人物变脸", "五官漂移", "肢体扭曲", "多余人物", "画面闪烁",
@@ -129,8 +133,8 @@ def compose_negative_prompt(ep, shot: Shot) -> str:
     """
     # 空镜不放解剖类负向：画面里本来没有人，写"畸形手指"反而把模型往人上引。
     if characters_on_screen(ep, shot):
-        return _join_neg([_NEG_ANATOMY, _NEG_LAYOUT, _NEG_QUALITY])
-    return _join_neg([_NEG_LAYOUT, _NEG_QUALITY])
+        return _join_neg([_NEG_ANATOMY, _NEG_STYLE, _NEG_LAYOUT, _NEG_QUALITY])
+    return _join_neg([_NEG_STYLE, _NEG_LAYOUT, _NEG_QUALITY])
 
 
 def compose_video_negative(shot: Shot) -> str:
@@ -139,7 +143,7 @@ def compose_video_negative(shot: Shot) -> str:
     时长越长，变脸和闪烁越容易发生，所以它跟 `shot.duration` 不是无关的：
     这里不按时长加词（模型不认"几秒内别变脸"），但重跑时长时这段不必动。
     """
-    return _join_neg([_NEG_MOTION, _NEG_LAYOUT])
+    return _join_neg([_NEG_MOTION, _NEG_STYLE, _NEG_LAYOUT])
 
 
 
@@ -299,6 +303,43 @@ def unlocked_names(ep, shot: Shot, max_refs: int = 1) -> List[str]:
     return [c.name for c in chars if id(c) not in locked_names_]
 
 
+#: 定妆照的骨架。这张图的作用不是"好看"，是当参考图喂给后面几十个镜头 ——
+#: 所以它要的是**可复用**：正面、平光、无遮挡、细节清楚。
+#:
+#: 社区里那张"角色参考图"模板（turnaround sheet）之所以有效，靠的就是这几条；
+#: 我们不需要三视图，但正面约束、均匀光、纯背景、无遮挡这几条必须留。
+#: 少了它们，模型会送一张电影感逆光侧脸 —— 好看，但拿去锁脸时它什么也锁不住。
+ANCHOR_SPEC = (
+    "正面胸像，平视机位，中性表情看向镜头",
+    "纯色浅灰背景，无道具、无遮挡、无文字",
+    "均匀柔光，主光在正前方偏上，脸上没有强对比阴影",
+    "85mm 浅景深，皮肤与发丝细节清晰",
+    "五官对称、发际线与耳廓完整，同一张脸不做美化",
+)
+
+
+def compose_anchor_prompt(ep, ch: Character, base: str = "") -> str:
+    """定妆照（角色参考图）提示词。
+
+    顺序：**长相**在最前（它才是身份），然后规格，最后风格。
+    风格放最后是刻意的：`ep.style` 里常有"冷青、高对比、胶片颗粒"这类话，
+    放开头会把"这个人长什么样"挤掉，出来的参考图每张都像不同的人。
+
+    `base` 是模型自己写的那句（`anchor_prompt`）。留着它 —— 模型可能知道
+    "袖口总沾着机油"这种更具体的东西；但**规格必须补齐**，因为模型几乎不会
+    主动写"纯色背景、均匀柔光、无遮挡"，而缺了这几条，那张图就没法当参考图用。
+    补法是幂等的：已经写了的条目不重复补，所以重跑不会越写越长。
+    """
+    head = _tidy(base) or _tidy(ch.desc) or ""
+    parts = [head]
+    for item in ANCHOR_SPEC:
+        if item.split("，")[0] not in head:
+            parts.append(item)
+    if ep.style and "画风" not in head:
+        parts.append(f"画风：{ep.style}")
+    return _join_parts(parts)
+
+
 def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
     """首帧提示词。
 
@@ -322,6 +363,8 @@ def compose_image_prompt(ep, shot: Shot, labels=(), unlocked=()) -> str:
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     # 焦段/景深/光比：十来个字，换来透视和光比的确定性
     parts.append(lint.lens_clause(shot.framing))
+    # 机位高度：不写，模型给一张"眼睛在画面正中"的证件照
+    parts.append(lint.height_clause(shot.framing))
     # 人数写死 —— 不写，模型会在空处补人
     parts.append(lint.count_clause([c.name for c in characters_in_shot(ep, shot)]))
     parts.append(_clip(ep.style or "", 24) if short else (ep.style or ""))
@@ -343,10 +386,13 @@ def compose_last_frame(ep, shot: Shot, labels=(), unlocked=()) -> str:
     for ch in characters_in_shot(ep, shot):
         desc = _clip(ch.desc, 36) if short else (ch.desc or "")
         parts.append(f"角色 {ch.name}：{desc}")
+    parts.append("同一镜头的最后一帧")
     parts.append(_clip(end, 64) if short else end)
     if not _action_already_names_framing(end):
         parts.append(FRAMING_PROMPT.get(shot.framing, "中景"))
     parts.append(lint.lens_clause(shot.framing))
+    parts.append(lint.height_clause(shot.framing))
+    parts.append(lint.still_clause())
     parts.append(lint.count_clause([c.name for c in characters_in_shot(ep, shot)]))
     parts.append(_clip(ep.style or "", 24) if short else (ep.style or ""))
     body = _join_parts(parts)
@@ -424,8 +470,8 @@ def run(ctx: StageContext) -> StageReport:
     reused = 0                     # 项目里已有、这一集直接复用的
     warned_no_t2i = False          # 只在第一次缺 provider 时提示，别每个角色刷一行
     for ch in ep.characters:
-        if not ch.anchor_prompt:
-            ch.anchor_prompt = f"{ep.style}，人物定妆照，{ch.desc}"
+        # 模型给了就当时底稿，缺的规格补上；没给就从 desc 起头。
+        ch.anchor_prompt = compose_anchor_prompt(ep, ch, base=ch.anchor_prompt)
         run_level = paths.portrait(ctx.root, ctx.run.run_id, ch.name)
         canon = paths.project_portrait(ctx.root, pid, ch.name) if pid else None
 

@@ -145,6 +145,17 @@ Episode 1, shot 1 of 《雨夜旧书店》, real output (excerpt):
 > 多余的手指, 畸形的手, 五官错位, 文字, 水印, 字幕, 过曝, 塑料皮肤……
 > 变脸, 闪烁, 跳帧, 动作僵住, 鬼影
 
+Each of the five has a skeleton. These come from the prompt templates the community
+actually uses; only the parts with a defensible "why" survived:
+
+| Part | Skeleton, in this order | Why this order |
+|---|---|---|
+| Character sheet | looks → frontal bust / eye level / neutral expression facing camera → plain light-grey backdrop, no props, nothing occluding → even soft light, no hard shadow on the face → 85mm shallow depth of field → art direction | It is a reference image, not a poster. A gorgeous backlit profile shot locks nothing |
+| First frame | character (verbatim) → action → shot size → lens / depth of field / light ratio → camera height → how many people → style | Style goes last; up front it outranks the face |
+| Last frame | character → "the final frame of the same shot" + end picture → shot size → lens → camera height → "a single frozen instant, clean edges, no motion blur" → how many people | A blurred reference frame makes the image-to-video pass mushy |
+| Camera move | one move → "completes evenly over N seconds, no speeding up or slowing down" → who does what → where it ends | Put the move at the end and Kling treats it as optional extra; the frame drifts |
+| Negative | anatomy + cheap-3D collapse + layout + quality (swap anatomy for time-domain failures on the video track) | One group, one job. Mixed together, the model honours three and drops the rest |
+
 Things that usually go wrong are handled literally here:
 
 | Usual failure | How it is handled |

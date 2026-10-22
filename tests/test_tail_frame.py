@@ -135,7 +135,13 @@ def test_without_an_end_action_it_falls_back_but_says_so():
     """老项目没有这个字段 —— 退回 action 是**已知的降级**，不是等价。"""
     ep = _ep("")
     shot = ep.shots[0]
-    assert compose_last_frame(ep, shot, []) == compose_image_prompt(ep, shot, [])
+    # 退化时动作描述还是首帧那一句（降级的代价），但尾帧会被明确标成
+    # "最后一帧的定格"——以前两者逐字相同，模型以为要两张一样的图。
+    img = compose_image_prompt(ep, shot, [])
+    last = compose_last_frame(ep, shot, [])
+    assert shot.action in last and shot.action in img
+    assert last != img
+    assert "最后一帧" in last
 
 
 def test_the_repair_fills_by_scene_and_order_not_by_position():

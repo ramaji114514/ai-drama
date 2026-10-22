@@ -131,6 +131,7 @@ def test_the_video_prompt_does_not_double_its_full_stop():
     prompt = compose_video_prompt(_shot("林溪弯腰凑近猫，眉头微皱。", duration=15.0))
     assert "。。" not in prompt
     # 运镜放最前面：可灵会把末尾的运镜当可选补充，放后面经常被忽略
+    # 运镜在前，速度交代在后（15 秒镜头该"缓慢平稳"）
     assert prompt.startswith("轻微手持跟随，15 秒内匀速完成")
     assert "林溪弯腰凑近猫，眉头微皱" in prompt
 
