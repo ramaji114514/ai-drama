@@ -373,6 +373,9 @@ def test_a_run_exposes_its_storyboard_and_the_files_behind_it(
     assert shot["video_negative"], "视频负向词同样要带出去"
     assert shot["image_prompt"], "关键帧都渲好了，首帧提示词不该是空的"
     assert shot["last_frame"], "尾帧至少会退化成 action，不该是空字符串"
+    # 体检结果要进接口：只写在终端里的话，页面上就只剩一句"体检通过"
+    assert isinstance(shot["lint"], list), "体检结果没带出去"
+    assert all({"code", "level", "message"} <= set(f) for f in shot["lint"])
     # 定妆照那一段在角色卡上，不在分镜上 —— 它是"定这张脸"的提示词，
     # 一集一张，不能跟着每一镜重复一遍。
     assert sb["characters"], "这一集有出镜角色，卡司不该是空的"
@@ -467,6 +470,8 @@ def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
     # 四段里有一段在角色卡上（定妆照），三段在每一镜上。只顾分镜的话，
     # 用户永远拿不到"定这张脸"的那段话。
     assert "function shotPrompts" in page, "分镜那三段没有走同一个渲染器"
+    assert "function lintBox" in page, "体检结果没在页面上摊开"
+    assert 'class="lint bad"' in page or "lint bad" in page
     assert "function anchorFields" in page, "定妆照没走平台改写那一层"
     assert "anchor_dialects" in page, "接口给了方言版，页面没用"
     # 剪贴板 API 在非 https 的局域网地址上会失败，必须留着 execCommand 的退路

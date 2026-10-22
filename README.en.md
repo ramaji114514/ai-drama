@@ -189,6 +189,10 @@ movement, several moves in one shot, no negatives — all reported as
 “prompt check: N notes” in the stage report. It never blocks you; it just says out
 loud what you would otherwise notice in the finished video.
 
+**The same result is on the page**: one badge per shot — “check passed”, or “N notes”
+which opens to which note and why. It used to live only in the terminal output, which
+meant you never saw it once you were looking at the storyboard.
+
 Prompts are written in Chinese because the primary target platforms are Chinese.
 The structure (first frame / last frame / camera / negative) is platform-neutral.
 

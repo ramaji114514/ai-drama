@@ -577,6 +577,7 @@ function shotCard(sh) {
       ${sh.action ? `<p class="act">${esc(sh.action)}</p>` : ''}
       ${sh.end_action ? `<p class="act dim">结束画面：${esc(sh.end_action)}</p>` : ''}
       ${sh.dialogue ? `<p class="dlg">${esc(sh.dialogue)}</p>` : ''}
+      ${lintBox(sh)}
       ${shotPrompts(sh)}
       <div class="row"><button class="cp" onclick="rerunShot('${esc(sh.label)}')"
         title="只重跑这一镜：用现在的提示词重出关键帧">重跑这一镜</button></div>
@@ -587,6 +588,22 @@ function shotCard(sh) {
         : (sh.declared ? '<div class="sfx">出镜：声明为空镜</div>' : '')}
       ${sh.error ? `<div class="err">${esc(sh.error)}</div>` : ''}
     </div></div>`;
+}
+
+// 体检结果。以前它只出现在命令行输出里 —— 用户跑到页面上就看不见了，
+// 于是"体检通过"这句话等于没说。这里把每一条摊开：哪一条、哪个词、怎么改。
+function lintBox(sh) {
+  const found = sh.lint || [];
+  const warn = found.filter((f) => f.level === 'warn');
+  const badge = warn.length
+    ? `<span class="lint bad">体检 ${warn.length} 条</span>`
+    : '<span class="lint ok">体检通过</span>';
+  if (!warn.length) return `<div class="lintrow">${badge}</div>`;
+  const items = warn.map((f) => `<li><span class="code">${esc(f.code)}</span>${
+    esc(f.message)}</li>`).join('');
+  return `<div class="lintrow">${badge}</div>
+    <details class="prompts"><summary>看看是哪几条</summary>
+      <ul class="lintlist">${items}</ul></details>`;
 }
 
 // 分镜原文编辑器：动作、台词、结束画面、景别。

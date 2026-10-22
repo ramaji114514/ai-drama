@@ -26,7 +26,8 @@ from .. import __version__
 from ..core import assets as assetslib
 from ..core import dialects
 from ..core import paths
-from ..stages.stage02_storyboard import FRAMING_PROMPT
+from ..core import lint
+from ..stages.stage02_storyboard import FRAMING_PROMPT, PROMPT_BUDGET
 from ..core import project as projectlib
 
 #: `/media` 允许读出去的目录前缀（相对工作目录）。
@@ -226,6 +227,9 @@ def _shot_payload(root: Path, run_id: str, scene_id: str, shot: Any,
         # 被当成画面内容），所以同一镜在这里预渲染成几份方言，页面切换即可，
         # 不用把判断散进前端 JS。
         "dialects": dialects.render_all(None, shot),
+        # 体检结果现算，不落库：lint 是纯函数，落库反而会和"改过提示词"打架。
+        # 页面上一镜一个小角标，点开看是哪条、怎么改 —— 否则体检只活在终端里。
+        "lint": [f.as_dict() for f in lint.lint_shot(shot, budget=PROMPT_BUDGET)],
         "duration": float(getattr(shot, "duration", 0.0) or 0.0),
         "characters": list(getattr(shot, "characters", None) or []),
         "declared": getattr(shot, "characters", None) is not None,

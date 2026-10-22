@@ -173,3 +173,13 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
 .note.bad{border-color:#b4433a}
 /* 只读的提示词框别看成一堵墙：颜色压暗，光标也说明它不能改 */
 .pftext[readonly]{color:#8d8d8d;cursor:default}
+
+/* 体检：一镜一个角标。通过时不抢注意力，有问题时才显眼。 */
+.lintrow { margin: 6px 0 2px; }
+.lint { font-size: 11px; padding: 1px 8px; border-radius: 10px;
+        border: 1px solid var(--line); }
+.lint.ok { color: var(--dim); }
+.lint.bad { color: #f0b95b; border-color: #6b4d1c; background: #2a2010; }
+.lintlist { margin: 6px 0 0; padding-left: 18px; font-size: 11px;
+            line-height: 1.7; color: var(--dim); }
+.lintlist .code { display: inline-block; min-width: 108px; color: #f0b95b; }
