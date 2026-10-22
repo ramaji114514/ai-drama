@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional, Tuple
 # 你在这里引入什么都可以 —— 装依赖是你的自由，但别把依赖带进 stages/。
 # import httpx
 
-from .base import ProviderError, Usage, VideoProvider
+from .base import ProviderCaps, ProviderError, Usage, VideoProvider
 from .registry import register
 
 
@@ -38,6 +38,16 @@ class YourVendorVideo(VideoProvider):
     """把这里所有 your-vendor / YOUR_VENDOR 换掉。"""
 
     name = "your-vendor"
+
+    # 声明你的模型**真正的**上限。写错了不会报错，只会让成片被静默截断：
+    # 骨架会按这个数把长镜头拆成几段，每段单独发一次请求（见
+    # docs/adding-a-provider.md 的「视频提示词是按段发的」）。
+    # 不写就按"不限制"处理；写错方向（把 5 秒写成 15 秒）不会有人拦你。
+    caps = ProviderCaps(
+        width=720, height=1280, fps=24,
+        min_duration=4.0, max_duration=15.0,
+        aspect_ratios=("9:16", "16:9"),
+    )
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         # 构造函数签名随意，只要 build_bundle() 能传进来。

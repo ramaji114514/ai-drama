@@ -12,9 +12,10 @@
 > 以及几个官方文档没写、只有发过请求才知道的坑（README 的「已经接好的一家」里）。
 > 骨架负责告诉你**必须实现什么**，那个文件负责告诉你**实际会遇到什么**。
 
-六种形态：`text`（写剧本）/ `image`（关键帧）/ `video`（镜头片段）/
-`audio`（配音与 BGM）/ `t2i`（定妆照，可关）/ `lipsync`（口型同步，可关）。
-每种形态一个环境变量，见下面各节。
+八种形态：`text`（写剧本）/ `image`（关键帧）/ `video`（镜头片段）/
+`audio`（配音与 BGM）/ `t2i`（定妆照，可关）/ `lipsync`（口型同步，可关）/
+`vision`（看图质检，可关）/ `sfx`（音效，可关）。
+每种形态一个环境变量（`AI_DRAMA_<形态>`），见下面各节。
 
 ## 三步
 
@@ -36,7 +37,8 @@ class YourVendorVideo(VideoProvider):
     name = "your_vendor"
 
     # 声明你的模型**真正的**上限。写错了不会报错，只会让成片被静默截断。
-    caps = ProviderCaps(width=720, height=1280, fps=24, max_duration=8.0,
+    caps = ProviderCaps(width=720, height=1280, fps=24,
+                        min_duration=4.0, max_duration=15.0,
                         aspect_ratios=("9:16", "16:9"))
 
     def __init__(self, api_key: str = "", base_url: str = ""):
@@ -51,7 +53,7 @@ $env:AI_DRAMA_VIDEO="your_vendor"
 python run.py run --idea "..."
 ```
 
-## 四个必须守住的约定
+## 七个必须守住的约定
 
 ### ① 错误要分类，别一律吞掉
 
@@ -73,6 +75,10 @@ ProviderError(msg, retryable=False)   # 参数非法 / 内容违规 / 余额不�
 **报少了就是漏记，报假了就是账本不可信** —— 而这个骨架存在的理由之一
 就是让"这一集花了多少钱"是个能回答的问题。
 
+还有一条命名约定：**别把自己的 provider 叫 `dryrun` 开头**。成本页靠这个前缀
+区分"编的价"和真扣的钱（`core/context.is_simulated`）；你的适配器只要如实写
+`money`，真假由前缀判定，不需要也不应该自己声明。
+
 ### ③ 能力上限来自你的声明，不是我的猜测
 
 `caps.max_duration` 决定单镜要不要拆段（`core/media.plan_shot_split`）。
@@ -83,6 +89,14 @@ ProviderError(msg, retryable=False)   # 参数非法 / 内容违规 / 余额不�
 * 没声明，骨架会去 `config/models.yaml` 找同名条目补上；
 * 两边都没有，**按"不限制"处理**（fail-open），并在报告里说明。
 
+15 秒是产品默认的一镜片长（`AI_DRAMA_SHOT_SECONDS` 可改；`--target 60` 会按镜数
+均摊出每镜该多长）。它和 `caps.max_duration` 是两件事：前者是"这一镜该多长"，
+后者是"你一次最多能拍多长"。两者都成立时骨架负责把镜头拆成几段，
+而不是让模型悄悄截断 —— 拆段的细节见下一节。
+
+`max_duration_ceiling` 是另一回事：超过它就**直接报错，不拆**。留给"拆了也没用"
+的模型（对时长有下限、碎段会被接口拒绝）。
+
 ### ④ 参考图要在提示词里点名
 
 只把图传给模型**不等于**它会用。`core/identity.reference_block()` 生成
@@ -90,7 +104,32 @@ ProviderError(msg, retryable=False)   # 参数非法 / 内容违规 / 余额不�
 正面构图）。参考图列表的顺序必须与提示词里的编号一致 —— 错一位模型不会
 报错，它只会很认真地照着错的那张图渲染。
 
-## 口型同步（第六种形态）
+### ⑤ 视频提示词是按段发的，不是整镜
+
+一个 15 秒的镜头，遇到上限 5 秒的模型会被拆成 3 段，**每一段都是独立的请求**，
+`prompt` 也是改写过的（`stage04_video._part_prompt`）：去掉整镜那句"15 秒内匀速
+完成"，换成"这是第 1/3 段，不要在这一段里收尾"这类交代。
+
+所以适配器里不要假设：
+
+* `prompt` 描述的是一整镜 —— 它只描述这一段；
+* `duration` 等于分镜里的时长 —— 它是**这一段的**秒数，可能只有 5；
+* `negative_prompt` 一定有内容 —— 没有负向框的模型会拿到空串，忽略它就行，
+  但**不要**把它拼进正向提示词（正向里每个名词都会被当成要画的东西）。
+
+## 平台方言不归 provider 管
+
+`ai_drama/core/dialects.py` 里那张表（可灵/即梦/海螺/Runway/Veo/Sora…）是给
+**人**用的：它把提示词按各网页端的框整理一遍，好让人复制粘贴。provider 从头到尾
+看不到"方言"这个词 —— 走 API 的时候，提示词是骨架拼好的那几段直接发出去。
+
+所以：
+
+* 你要接的是**网页平台**（用户自己粘贴）→ 改 `dialects.py` 的 `DIALECTS` 表；
+* 你要接的是**API**（代码里调）→ 写一个 provider，跟方言表无关；
+* 两家都接也不冲突，它们是两条互不依赖的路。
+
+## 口型同步（`lipsync`）
 
 前四种形态是"生成"，`t2i` 是"只出图"，`lipsync` 是**已经出片之后**才做的一步：
 输入一段画面 + 一段配音，输出一段对好嘴的画面。
@@ -133,7 +172,7 @@ $env:AI_DRAMA_LIPSYNC="your_vendor"
 明确写出"N 个有台词的镜头被跳过、成片里嘴型没有对齐"。
 要让这件事变成硬门槛，打开 `config/qc_rules.yaml` 的 `require_lipsync`。
 
-### ⑤ `poll` 要能被另一次进程调用
+### ⑥ `poll` 要能被另一次进程调用
 
 视频是唯一一个"提交出去、等几分钟才回来"的形态，而进程在这几分钟里死掉是
 完全正常的事（Ctrl-C、断电、容器被回收）。所以骨架会把提交成功的 job_id
@@ -166,7 +205,7 @@ def poll(self, job_id, *, timeout=300.0):
 `tests/test_job_ledger.py` 里有三条测试钉住这套行为（含用 `KeyboardInterrupt`
 模拟进程被打断），照它们写就行。
 
-### ⑥ 文本 provider 要给出镜角色
+### ⑦ 文本 provider 要给出镜角色
 
 分镜阶段的文本 provider 在每个镜头的 JSON 里都要带一个 `characters` 数组，
 列出**画面里真的看得见**的角色名（空镜是空数组）：
@@ -186,7 +225,7 @@ def poll(self, job_id, *, timeout=300.0):
 名字要和顶层 `characters` 数组里的**逐字一致**；对不上时那一镜拿不到参考图，
 报告里会把不认识的名字列出来。
 
-## 视觉校验（第七种形态）
+## 视觉校验（`vision`）
 
 前六种形态都在**做东西**，这一种只负责"看一眼已经做出来的东西，然后说话"。
 它不产出任何交付物，不写文件，不改画面。
@@ -248,7 +287,7 @@ class YourVision(VisionProvider):
 自检：`python run.py doctor` 会单列一行 `vision`。没配时打印的是
 "默认关闭"而不是"已关闭"—— 这两句话的区别是"你没开"和"你关掉了它"。
 
-## 音效（第八种形态）
+## 音效（`sfx`）
 
 和前七种都不同：它的粒度是**每镜 0-3 条**，而不是"每句一条"或"全片一条"。
 
@@ -327,7 +366,12 @@ ref_fields:
 python run.py providers     # 你的 provider 出现了吗
 python run.py models        # 能力上限补对了吗
 python run.py doctor        # 环境齐全吗
+python -m pytest -q tests/test_providers.py   # 接口契约有没有走偏
 ```
+
+装成命令之后这些是同一套东西（`pip install .` 之后用 `ai-drama` 代替
+`python run.py`）；你的适配器只要放在 `ai_drama/providers/` 下，
+打包时会自动带上，不用改 `pyproject.toml`。
 
 接上之后先跑一小段看看方向对不对，别一上来就跑全剧：
 
