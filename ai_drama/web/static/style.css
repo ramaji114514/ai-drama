@@ -183,3 +183,9 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
 .lintlist { margin: 6px 0 0; padding-left: 18px; font-size: 11px;
             line-height: 1.7; color: var(--dim); }
 .lintlist .code { display: inline-block; min-width: 108px; color: #f0b95b; }
+
+/* 语言开关：一个按钮，写"点一下会变成什么" */
+.lang { font: inherit; font-size: 11px; line-height: 1; padding: 4px 9px;
+        border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+        color: var(--dim); background: transparent; }
+.lang:hover { color: var(--fg); border-color: var(--dim); }

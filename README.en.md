@@ -109,6 +109,8 @@ Saving it re-composes the first frame / last frame / camera / negative prompts
 from the local skeleton and re-times the shot; a longer line makes a longer shot,
 because the dialogue is the hard floor on duration.
 
+There's an **EN / 中文** button in the top right: one click and the UI is English, and it stays that way (or pass `?lang=en`). Only the interface is translated — the prompts, the lines and the storyboard JSON are never touched, because those are the content you paste elsewhere.
+
 The page binds to localhost only and never creates runs or spends money: the only
 write paths are "edit a prompt", "edit the shot text" and "re-run this shot".
 Cast can't be edited here on purpose — it drags the reference images and identity

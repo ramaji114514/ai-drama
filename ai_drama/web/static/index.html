@@ -14,6 +14,7 @@
   </div>
   <div class="where" id="where"></div>
   <div class="kinds" id="kinds"></div>
+  <button id="lang" class="lang" type="button">EN</button>
 </header>
 
 <div id="layout">
@@ -32,9 +33,9 @@
     <div class="empty" id="empty">
       <h1>左边挑一条 run</h1>
       <p class="dim">
-        这里只读：它把已经写在磁盘上的东西摆出来 —— 分镜、关键帧、时间轴、字幕、
-        质检结论、成本构成、资产血缘。想跑新片子还是用
-        <code>python run.py run --idea "..."</code>。
+        它把已经写在磁盘上的东西摆出来 —— 分镜、关键帧、时间轴、字幕、
+        质检结论、成本构成、资产血缘。提示词和分镜可以直接在这儿改；
+        想跑新片子用 <code>python run.py run --idea "..."</code>。
       </p>
       <p class="dim" id="emptyhint"></p>
     </div>
@@ -44,6 +45,7 @@
 
 <div id="lightbox" hidden><img alt=""></div>
 
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

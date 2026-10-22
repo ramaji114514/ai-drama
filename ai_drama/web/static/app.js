@@ -99,6 +99,12 @@ async function boot() {
   renderRuns();
   renderProjects();
   if (!route() && state.runs.length) go('#/run/' + state.runs[0].run_id);
+  // 顶层 const 不会挂到 window 上，只能用这个名字判断它有没有定义
+  if (typeof I18N !== 'undefined') {
+    I18N.start();
+    const lang = document.getElementById('lang');
+    if (lang) lang.onclick = () => I18N.toggle();
+  }
 }
 
 
@@ -726,8 +732,8 @@ function tabQc(d) {
       counts.unchecked || 0}</div></div>
     <div class="stat"><div class="k">检查的镜头</div><div class="v">${
       qc.shots_total || 0}</div></div>
-    <div class="stat"><div class="k">检查的资产</div><div class="v">${
-      qc.assets_checked || 0}</div></div>
+    <div class="stat"><div class="k">资产查过</div><div class="v">${
+      qc.assets_checked === false ? '—' : '✓'}</div></div>
   </div>
   ${qc.state === 'unchecked' ? `<div class="card" style="border-color:var(--warn)">
     <b style="color:var(--warn)">没查成，不等于通过。</b>

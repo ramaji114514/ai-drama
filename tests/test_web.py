@@ -483,6 +483,41 @@ def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
     assert ".pftext" in css and ".cp" in css, "样式没跟上，框会贴在边上"
 
 
+def test_the_page_speaks_english_without_translating_the_prompts():
+    """英文界面是"渲染之后再翻"，所以有两件事必须同时成立。
+
+    **要翻的**：这些字是界面自己的 —— 页签、按钮、表头、体检结论。
+    **不能翻的**：提示词、台词、剧本 JSON —— 它们是内容，翻了就废了
+    （英文模型收到中文提示词照样能用，收到被机器翻过的提示词才是灾难）。
+
+    这也是这条用例为什么盯 `SKIP` 那一行：把 TEXTAREA / PRE 从跳过名单里去掉，
+    英文界面上复制的每一段提示词都会变成"translated by nobody"。
+    """
+    page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    i18n = (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert '<script src="/i18n.js"></script>' in html, "英文包没被页面加载"
+    assert html.index("/i18n.js") < html.index("/app.js"), "i18n 必须在 app.js 之前就位"
+    assert 'id="lang"' in html, "没有切换按钮，英文版只能靠改地址栏"
+    assert "I18N.start()" in page and "I18N.toggle()" in page, "页面没接上语言状态"
+
+    # 内容容器必须被排除
+    assert 'new Set(["PRE", "TEXTAREA", "CODE", "SCRIPT", "STYLE"' in i18n
+    # 空串译文也要能生效（"第 1 集" 的"集"在英文里没有对应词）
+    assert "hasOwnProperty.call(EN, raw)" in i18n
+    # 选中的语言要记住，否则每开一页都要重新点
+    assert "localStorage" in i18n and "?lang=" in i18n
+
+    # 抽查几条最显眼的：翻错了用户一眼能看到
+    for zh, en in [("分镜", "Storyboard"), ("导出全部提示词", "Export all prompts"),
+                   ("实际花费", "Actually spent"), ("体检通过", "Lint passed")]:
+        assert f'"{zh}": "{en}"' in i18n, f"字典里缺 {zh} → {en}"
+
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert ".lang" in css, "切换按钮没有样式，会贴成一行文字"
+
+
 def test_the_whole_episode_of_prompts_can_be_taken_in_one_click():
     """整集提示词要能一次拿走，而不是一镜一镜点复制。
 
