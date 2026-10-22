@@ -91,7 +91,9 @@ def test_prompts_only_runs_the_two_text_stages():
     from ai_drama import cli
 
     src = Path(cli.__file__).read_text(encoding="utf-8")
-    at = src.index("def cmd_prompts")
+    # 真正跑流水线的那一段：变体功能把"跑一次"抽成了 _one_prompt_bundle，
+    # 所以切片起点跟着它走 —— 钉的是"只跑这两个阶段"，不是"写在哪个函数里"。
+    at = src.index("def _one_prompt_bundle")
     body = src[at: src.index("def import_episode_json")]
     assert 'stages=["script", "storyboard"]' in body
     assert "verbose=False" in body

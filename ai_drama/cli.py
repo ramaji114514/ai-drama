@@ -279,6 +279,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result["state"] == "done" else 2
 
 
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """stdio 上跑 MCP：一行一个 JSON-RPC。日志一律走 stderr。"""
+    from . import mcp_server
+
+    return mcp_server.serve()
+
+
 def _one_prompt_bundle(args: argparse.Namespace, notes: str = "") -> Tuple[dict, str]:
     """跑一次 script + storyboard，回 (提示词包, run_id)。"""
     from .core import export
@@ -394,13 +401,6 @@ def cmd_prompts(args: argparse.Namespace) -> int:
     else:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     return 0
-
-
-def cmd_mcp(args: argparse.Namespace) -> int:
-    """stdio 上跑 MCP：一行一个 JSON-RPC。日志一律走 stderr。"""
-    from . import mcp_server
-
-    return mcp_server.serve()
 
 
 def import_episode_json(root: Path, store: Any, run_id: str) -> Optional[int]:
