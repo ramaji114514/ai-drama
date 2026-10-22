@@ -377,6 +377,8 @@ def test_a_run_exposes_its_storyboard_and_the_files_behind_it(
     # 一集一张，不能跟着每一镜重复一遍。
     assert sb["characters"], "这一集有出镜角色，卡司不该是空的"
     assert sb["characters"][0]["anchor_prompt"], "定妆照提示词没带出去，角色卡上就是空框"
+    # 定妆照也受平台字数限制：改写过的那几家才出现，短的时候是空字典
+    assert isinstance(sb["characters"][0]["anchor_dialects"], dict)
     assert shot["keyframe"]["exists"] is True
     # 路径是 quote 过的（文件名里可能有空格与汉字），所以这里不能写死 runs/
     assert shot["keyframe"]["url"].startswith("/media?path=")
@@ -465,7 +467,8 @@ def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
     # 四段里有一段在角色卡上（定妆照），三段在每一镜上。只顾分镜的话，
     # 用户永远拿不到"定这张脸"的那段话。
     assert "function shotPrompts" in page, "分镜那三段没有走同一个渲染器"
-    assert "promptBox(c.anchor_prompt" in page, "角色卡上没摆定妆照提示词"
+    assert "function anchorFields" in page, "定妆照没走平台改写那一层"
+    assert "anchor_dialects" in page, "接口给了方言版，页面没用"
     # 剪贴板 API 在非 https 的局域网地址上会失败，必须留着 execCommand 的退路
     assert "navigator.clipboard" in page and "execCommand" in page
     # 空字段不该摆一个空框出来假装有内容

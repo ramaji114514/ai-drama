@@ -10,7 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
-from ai_drama.core import export
+from ai_drama.core import dialects, export
 from ai_drama.core.models import Character, Episode, Scene, Shot
 
 
@@ -143,3 +143,18 @@ def test_the_cli_accepts_a_dialect():
     args = parser.parse_args(["prompts", "--idea", "x", "--dialect", "kling"])
     assert args.dialect == "kling"
     assert parser.parse_args(["prompts", "--idea", "x"]).dialect == ""
+
+
+def test_the_dialect_also_fits_the_character_sheet():
+    """定妆照是唯一会长到两百字以上的一段，按平台截断时也要带上。"""
+    from ai_drama.core import export
+
+    ep = _episode()
+    ep.characters[0].anchor_prompt = "角色长相描述。" * 300
+    data = export.bundle(ep, dialect="jimeng")
+    ch = data["characters"][0]
+    assert ch["dialect"] == "jimeng"
+    assert ch["truncated"] is True
+    assert len(ch["anchor_text"]) <= dialects.get("jimeng").max_chars
+    # 原文照样留着，截断是有损的
+    assert ch["anchor_prompt"] == ep.characters[0].anchor_prompt

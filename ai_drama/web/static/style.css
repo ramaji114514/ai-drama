@@ -149,8 +149,11 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
 .prompts > summary { cursor: pointer; color: var(--dim); font-size: 12px; padding: 2px 0; }
 .prompts > summary:hover { color: var(--fg); }
 .pf { margin: 8px 0; }
-.pfhead { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 4px; }
-.pfhead .dim { flex: 1; font-size: 11px; }
+.pfhead { display: flex; align-items: baseline; gap: 8px; font-size: 12px;
+          margin-bottom: 4px; flex-wrap: wrap; }
+/* 说明文字可以换行，但不能被挤成一列 —— 中文逐字换行会把卡片撑变形 */
+.pfhead .dim { flex: 1 1 120px; min-width: 120px; font-size: 11px;
+               line-height: 1.4; }
 .cp { font: inherit; font-size: 11px; padding: 2px 10px; border-radius: 6px;
   border: 1px solid var(--line); background: transparent; color: var(--dim); cursor: pointer; }
 .cp:hover { color: var(--fg); border-color: var(--dim); }

@@ -277,8 +277,7 @@ function tabStoryboard(d) {
           <div style="margin-top:8px">${c.portrait && c.portrait.exists
             ? `<img src="${mediaURL(c.portrait)}" style="width:64px;border-radius:4px">`
             : '<span class="miss">定妆照不在</span>'}</div>
-          ${promptBox(c.anchor_prompt
-            ? [['定妆照', c.anchor_prompt, '拿去做「角色参考图」']] : [])}
+          ${promptBox(anchorFields(c))}
         </div>`).join('')}</div></div>`
     : '';
   const scenes = sb.scenes.map((sc) => `<div class="scene">
@@ -364,7 +363,12 @@ function exportPrompts() {
     line('\n## 角色定妆照');
     sb.characters.forEach((c) => {
       line(`\n### ${c.name}${c.desc ? '（' + c.desc + '）' : ''}`);
-      line(c.anchor_prompt || '（这一集没有定妆照提示词）');
+      const fs = anchorFields(c);
+      if (!fs.length) line('（这一集没有定妆照提示词）');
+      fs.forEach(([title, text]) => {
+        if (fs.length > 1) line(`【${title}】`);
+        line(text);
+      });
     });
   }
   (sb.scenes || []).forEach((sc) => {
@@ -414,6 +418,16 @@ function exportPrompts() {
 // fields: [标题, 正文, 提示, 字段名?]。第四项存在 + 给了 editLabel，才出现「保存」——
 // 只有「通用」那份是原始字段；可灵/即梦/Seedance 那几份是裁过、去过小标题的
 // 派生文本，把派生文本存回去等于把原稿改坏，所以那几个平台只让复制。
+// 定妆照也会被平台改写：硬上限截断 + 一版"只留长相和拍法"的紧凑版。
+// 接口只回"被改写过的那几家"，拿不到就用原文。
+function anchorFields(c) {
+  const v = (c.anchor_dialects || {})[state.dialect];
+  if (v && v.fields && v.fields.length) {
+    return v.fields.map((f) => [f.title, f.text, f.hint]);
+  }
+  return c.anchor_prompt ? [['定妆照', c.anchor_prompt, '拿去做「角色参考图」']] : [];
+}
+
 function promptBox(fields, editLabel) {
   fields = (fields || []).filter(([, v]) => v);
   if (!fields.length) return '';

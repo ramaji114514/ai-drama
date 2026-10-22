@@ -174,3 +174,77 @@ def test_the_four_platforms_people_actually_use_are_all_here():
     """这条是产品承诺：可灵、即梦、豆包、海螺 —— 四个中文入口一个都不能少。"""
     for key in ("kling", "jimeng", "seedance", "hailuo"):
         assert key in dialects.keys(), key
+
+
+# ---- 定妆照也走方言（它只有一段，但字数上限照样管） ------------------------
+
+class _Char:
+    def __init__(self, anchor):
+        self.name = "林溪"
+        self.anchor_prompt = anchor
+
+
+def _long_anchor(n=400):
+    # 五条规格 + 一段长相 + 画风，真实长度大约两百字；这里放大到确定超限
+    return "角色长相描述。" * n
+
+
+def test_a_short_anchor_is_left_alone():
+    ch = _Char("28岁女性，齐肩黑发，深灰色风衣")
+    r = dialects.render_anchor(ch, "jimeng")
+    assert r.fields[0].text == ch.anchor_prompt
+    assert r.fields[0].truncated is False
+    assert r.dropped == []
+
+
+def test_an_overlong_anchor_is_cut_at_the_platform_limit_and_says_so():
+    ch = _Char(_long_anchor())
+    r = dialects.render_anchor(ch, "jimeng")
+    assert r.fields[0].truncated is True
+    assert len(r.fields[0].text) <= dialects.get("jimeng").max_chars
+    # 截了就明说，不偷偷砍掉末尾"五官与发际线完整"那一条
+    assert any("定妆照" in x and "截断" in x for x in r.dropped)
+
+
+def test_the_generic_platform_keeps_the_full_anchor():
+    ch = _Char(_long_anchor(6))  # 600 字左右，通用是 4000
+    assert dialects.render_anchor(ch, "generic").fields[0].truncated is False
+
+
+def test_anchor_variants_only_lists_the_platforms_that_changed():
+    # 只有一句、没有可删的东西：所有平台都一样，不必多发
+    one_line = _Char("一句话定妆照")
+    assert dialects.anchor_variants(one_line) == {}
+
+    # 有画风句可以删时，非通用平台都多出一版紧凑版（哪怕没被截断）
+    with_style = _Char("28岁女性，齐肩黑发，冷青色调，高对比胶片质感，"
+                       "正面胸像，平视机位，纯色浅灰背景，均匀柔光")
+    v = dialects.anchor_variants(with_style)
+    assert "generic" not in v
+    assert set(v) == set(dialects.keys()) - {"generic"}
+
+    long = _Char(_long_anchor())
+    variants = dialects.anchor_variants(long)
+    assert "jimeng" in variants and "veo" in variants
+    assert len(variants["jimeng"]["fields"]) == 2
+    # 通用 4000 字，600 字不会被改 —— 没必要让接口多发一份
+    assert "generic" not in variants
+
+
+def test_the_compact_anchor_drops_the_style_sentence():
+    """风格句跟长相抢权重，紧凑版把它整段删掉。"""
+    ch = _Char("28岁女性，齐肩黑发，深灰色风衣，冷青色调，高对比胶片质感，"
+               "正面胸像，平视机位，纯色浅灰背景，均匀柔光，85mm 浅景深，"
+               "五官对称、发际线与耳廓完整")
+    fields = {f.key: f for f in dialects.render_anchor(ch, "jimeng").fields}
+    assert "anchor_compact" in fields
+    short = fields["anchor_compact"].text
+    assert "冷青色调" not in short
+    assert "正面胸像" in short and "85mm" in short
+    assert len(short) < len(fields["anchor"].text)
+
+
+def test_the_generic_platform_gets_no_compact_version():
+    ch = _Char("28岁女性，齐肩黑发，冷青色调，正面胸像，纯色背景，均匀柔光")
+    keys = [f.key for f in dialects.render_anchor(ch, "generic").fields]
+    assert keys == ["anchor"]

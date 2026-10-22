@@ -269,6 +269,8 @@ def storyboard_payload(root: Path, store: Any, run_id: str, ep: Any) -> Dict[str
                 "aliases": list(c.aliases or []),
                 "desc": c.desc,
                 "anchor_prompt": c.anchor_prompt,
+                # 只有被平台字数上限改写过的那几家才出现，其余用原文
+                "anchor_dialects": dialects.anchor_variants(c),
                 "portrait": file_ref(root, c.ref_image) if c.ref_image else None,
             }
             for c in ep.characters
@@ -460,6 +462,7 @@ def project_payload(root: Path, project_id: str) -> Optional[Dict[str, Any]]:
                 "aliases": list(c.aliases or []),
                 "desc": c.desc,
                 "anchor_prompt": c.anchor_prompt,
+                "anchor_dialects": dialects.anchor_variants(c),
                 "voice": proj.voice_for(c, ""),
                 "portrait": file_ref(root, c.ref_image) if c.ref_image else None,
             }

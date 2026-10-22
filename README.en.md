@@ -269,6 +269,12 @@ top right and the prompts below are rewritten for that platform:
 | Hailuo (MiniMax) | no | yes | 2000 | bracketed commands, e.g. `[Push in]` |
 | Runway | no | yes | 2000 | plain sentence (English is steadier) |
 | Veo | yes (500 chars) | yes | 2000 | plain sentence (English is steadier) |
+
+**The character sheet follows the same switch** and gets an extra version: the full one
+(all five specs) plus a compact one that keeps only the looks and how it is shot, dropping
+the art-direction sentence entirely. A reference-image model cares about the face; the
+style sentence only competes with it. Pick "Generic" and you get the full version only —
+that option never trims your text.
 | Sora | no | first frame only | 2000 | plain sentence (long sentences work) |
 
 A few rules:

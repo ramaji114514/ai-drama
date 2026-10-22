@@ -52,8 +52,8 @@ def _shot(shot: Shot, dialect: str = "") -> Dict[str, Any]:
     return data
 
 
-def _character(char: Any) -> Dict[str, Any]:
-    return {
+def _character(char: Any, dialect: str = "") -> Dict[str, Any]:
+    data: Dict[str, Any] = {
         "char_id": getattr(char, "char_id", ""),
         "name": getattr(char, "name", ""),
         "desc": getattr(char, "desc", ""),
@@ -61,6 +61,22 @@ def _character(char: Any) -> Dict[str, Any]:
         "anchor_prompt": getattr(char, "anchor_prompt", "") or "",
         "ref_image": getattr(char, "ref_image", "") or "",
     }
+    if dialect:
+        # 定妆照是唯一会长到两百字以上的一段（五条规格一条都不能删），
+        # 即梦/海螺/Seedance 的图框都是 2000 字 —— 按平台截，并明说截了。
+        rendered = dialects.render_anchor(char, dialect)
+        data["dialect"] = rendered.key
+        full = next((f for f in rendered.fields if f.key == "anchor"), None)
+        compact = next((f for f in rendered.fields if f.key == "anchor_compact"),
+                       None)
+        data["anchor_text"] = full.text if full else ""
+        data["truncated"] = bool(full and full.truncated)
+        # 紧凑版只在平台需要时出现（通用不给）
+        if compact:
+            data["anchor_compact"] = compact.text
+            data["anchor_compact_hint"] = compact.hint
+        data["dropped"] = list(rendered.dropped)
+    return data
 
 
 def bundle(ep: Episode, *, aspect: str = "", dialect: str = "") -> Dict[str, Any]:
@@ -89,6 +105,6 @@ def bundle(ep: Episode, *, aspect: str = "", dialect: str = "") -> Dict[str, Any
         # 缺了就是空串（宁可空着，也不要在这猜一个 9:16）
         "aspect": aspect,
         "dialect": dialects.get(dialect).key if dialect else "",
-        "characters": [_character(c) for c in ep.characters],
+        "characters": [_character(c, dialect) for c in ep.characters],
         "scenes": scenes,
     }

@@ -317,3 +317,80 @@ def render(ep: Any, shot: Any, key: Optional[str] = None) -> Rendered:
 def render_all(ep: Any, shot: Any) -> Dict[str, Any]:
     """一镜 × 所有平台。网页端切换时直接用，不用来回请求。"""
     return {k: render(ep, shot, k).as_dict() for k in keys()}
+
+
+ANCHOR_HINT = "拿去做「角色参考图」"
+
+#: 定妆照里"删了就不能当参考图"的那几个词。紧凑版只保留含这些词的分句，
+#: 剩下的（画风、情绪、环境）整段丢掉 —— 参考图模型看的是长相，
+#: 风格句只会跟长相抢权重，这在骨架排序上已经承认过一次了。
+ANCHOR_KEEP = ("正面", "纯色", "柔光", "85mm", "五官", "平视")
+
+#: 紧凑版的上限。不是某家平台的硬限制（硬限制都 2000 以上，见 DIALECTS），
+#: 而是"再长就开始顾此失彼"的经验线：一张参考图值得写的只有长相和拍法。
+ANCHOR_COMPACT = 180
+
+
+def compact_anchor(text: str, limit: int = ANCHOR_COMPACT) -> str:
+    """去掉画风/情绪，只留长相与拍法的那一版。"""
+    parts = [x.strip() for x in re.split(r"[，,]", text or "") if x.strip()]
+    if not parts:
+        return ""
+    keep = [parts[0]] + [x for x in parts[1:]
+                         if any(k in x for k in ANCHOR_KEEP)]
+    out = "，".join(keep)
+    if len(out) <= limit:
+        return out
+    for mark in ("。", "；", "，"):
+        pos = out.rfind(mark, 0, limit)
+        if pos > limit * 0.6:
+            return out[: pos + 1].strip()
+    return out[:limit].strip()
+
+
+def render_anchor(ch: Any, key: Optional[str] = None) -> Rendered:
+    """角色的定妆照提示词，按平台字数上限整理。
+
+    定妆照和镜头提示词不是一回事：它只有一段，没有首尾帧之分、没有负向框，
+    但**字数上限照样管用** —— 即梦、海螺、Seedance 的图框都是 2000 字，
+    而定妆照是唯一会长到两百字以上的那一段（五条规格一条都不能删）。
+    截断时同样明说截了，不偷偷砍掉末尾的"五官与发际线完整"——
+    那一条恰好是锁脸最要紧的一条，被静默截掉最糟。
+    """
+    d = get(key)
+    out = Rendered(key=d.key, title=d.title, tip=d.tip)
+    full = getattr(ch, "anchor_prompt", "") or ""
+    text, cut = d.fit(full)
+    if text:
+        out.fields.append(Field("anchor", "定妆照", ANCHOR_HINT, text, cut))
+    # 紧凑版：硬限制管不到，但"再长就顾此失彼"管得到。
+    # 通用那栏不给 —— 选通用的意思就是"我要原文，别替我删"。
+    if d.key != GENERIC_KEY:
+        short = compact_anchor(d.clean(full))
+        if short and len(short) < len(text):
+            out.fields.append(Field(
+                "anchor_compact", "定妆照（紧凑版）",
+                f"{len(short)} 字，只留长相和拍法", short))
+    if cut:
+        out.dropped.append(
+            f"定妆照：超过这家平台的 {d.max_chars} 字，已按句号截断。"
+            "要完整版就切回「通用」。")
+    return out
+
+
+def anchor_variants(ch: Any) -> Dict[str, Any]:
+    """只交出**和原文不一样**的那几家。
+
+    定妆照本来就短的时候，八家全是同一段文字 —— 那就没必要让接口每次
+    多发八份。网页端拿不到某家时用回原文即可。
+    """
+    base = re.sub(r"[ \t]+", " ", (getattr(ch, "anchor_prompt", "") or "").strip())
+    out: Dict[str, Any] = {}
+    for k in keys():
+        r = render_anchor(ch, k)
+        text = r.fields[0].text if r.fields else ""
+        # 两种情况都算"被改写过"：截断了，或者多出一版紧凑版。
+        # 只比 fields[0] 会漏掉后者 —— 那版只加字段、不动原文。
+        if text != base or len(r.fields) > 1:
+            out[k] = r.as_dict()
+    return out
