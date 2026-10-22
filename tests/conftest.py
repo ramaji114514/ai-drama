@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -37,6 +38,20 @@ def workspace(tmp_path: Path) -> Path:
 def need_ffmpeg() -> None:
     if not has_ffmpeg():
         pytest.skip("ffmpeg/ffprobe 不在 PATH 上（装法见 README）")
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_provider_config(monkeypatch):
+    """把开发机上 `.env` 漏进来的配置清掉。
+
+    这不是洁癖：`.env` 里写着 `AI_DRAMA_TEXT=deepseek`，而
+    `cli.load_env()` 会把它塞进 `os.environ` —— 同一个进程里后续用例
+    再问"默认用哪个 provider"，拿到的是**别人的机器配置**，"默认必须是
+    dryrun"那条断言于是随机变红。测试要么全绿要么全红，不能看环境脸色。
+    """
+    for key in list(os.environ):
+        if key.startswith("AI_DRAMA_") and key != "AI_DRAMA_SHOT_SECONDS":
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(autouse=True)

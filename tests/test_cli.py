@@ -33,12 +33,15 @@ def _doctor(capsys) -> tuple[int, str]:
     return code, capsys.readouterr().out
 
 
-def test_doctor_reports_what_the_pipeline_will_actually_use(capsys):
+def test_doctor_reports_what_the_pipeline_will_actually_use(capsys, monkeypatch, tmp_path):
     """doctor 说"定妆照会跳过"，流水线却在跑定妆照 —— 这种谎报必须绝迹。
 
     真实历史：doctor 自己维护了一份默认值表，把 `t2i` 写成"未配置，定妆照
     会跳过"，而 `build_bundle` 早已默认 `dryrun`。两处各写一份，必然漂移。
     """
+    # 离开仓库根：否则 doctor 会读到开发机自己的 `.env`，
+    # "未设置" 那几行就永远看不到（这不是被测行为）。
+    monkeypatch.chdir(tmp_path)
     code, out = _doctor(capsys)
     assert "AI_DRAMA_T2I 未设置 -> dryrun" in out
     assert "定妆照会跳过" not in out
@@ -74,6 +77,7 @@ def test_env_file_is_really_read(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.delenv("AI_DRAMA_TEST_MARKER", raising=False)
+    monkeypatch.chdir(tmp_path)   # `.env` 跟着当前目录走（装成命令之后也是这规矩）
     cli.load_env()
     assert os.environ.get("AI_DRAMA_TEST_MARKER") == "hello"
     assert registry.effective_name("video") == "dryrun"
