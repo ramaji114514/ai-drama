@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-drama"
+version = "0.1.0"
+description = "一句话 → 一套能直接粘进视频模型的提示词（定妆照/首帧/尾帧/运镜/负向词），可选直接出片"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ramaji114514" }]
+keywords = ["prompt-engineering", "ai-video", "short-drama", "storyboard", "text-to-video"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Multimedia :: Video",
+]
+# 刻意的空列表：零第三方依赖是卖点，`pip install ai-drama` 不该拖任何东西进来。
+dependencies = []
+
+[project.optional-dependencies]
+# 可选增强，不是必需品：
+#   dotenv -> 用 .env 文件配 provider；Pillow -> 更稳的图片处理
+dotenv = ["python-dotenv"]
+images = ["Pillow"]
+all = ["python-dotenv", "Pillow"]
+
+[project.scripts]
+ai-drama = "ai_drama.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ramaji114514/ai-drama"
+Issues = "https://github.com/ramaji114514/ai-drama/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["ai_drama*"]
+
+# config/ 与 skills/ 是**可覆盖的默认值**：读不到时 catalog 用内置目录、
+# qc 用内置规则，不会崩。但要装成命令之后还能改它们，就得随包发一份。
+# 装到 <prefix>/share/ai-drama/，由 ai_drama/resources.py 按三级顺序找到。
+[tool.setuptools.data-files]
+"share/ai-drama/config" = ["config/*.yaml"]
+"share/ai-drama/skills" = ["skills/*.md", "skills/*/SKILL.md"]
+"share/ai-drama/agent" = ["agent/SKILL.md"]
+"share/ai-drama" = ["README.md", "README.en.md", "LICENSE"]

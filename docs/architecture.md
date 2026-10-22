@@ -589,6 +589,38 @@ Range 和字节。和 provider 层"判定逻辑是纯函数、IO 很薄"是同�
 直接插值。单元测试断言的是"这个数存在"，没有一条会去看它怎么渲染。修完补了一条
 把**两边共用的形状**钉住的断言：形状改了会红，页面不再读 `.count` 也会红。
 
+## 给机器用的两个入口：MCP 和变体
+
+网页是给人看的；脚本和 agent 要的是**结构化、可管道**的东西。所以同一条
+"只跑 script + storyboard"的路有两个壳：
+
+- `python run.py prompts --json out.json` —— 一次性，退出码说话；
+- `python run.py mcp` —— 常驻 stdio，客户端按需调 `write_prompts`。
+
+两个壳共用 `cli._one_prompt_bundle`，所以**不可能出现"命令行的提示词和 MCP 的
+不一样"**。这条不是洁癖：一旦两份实现分叉，调试时会先把时间花在"到底哪一份对"。
+
+MCP 这一层只有三个方法（initialize / tools/list / tools/call），所以手写而不是
+装 SDK —— 用不到的协议面不该进依赖表。两条硬约束：
+
+1. **stdout 只有 JSON-RPC。** 工具里任何 `print` 都被 `redirect_stdout` 改道
+   stderr；混进一行阶段报告，客户端解析就断了。
+2. **工具失败不能打死服务。** 异常翻成 `isError: true` 的 content，进程继续
+   读下一行。
+
+变体（`--variants N`）走的是另一条路：它不是"重跑一遍碰运气"，第 k 个变体会在
+提示词里多一句"换一个开场方式和结尾落点"。不给这句，同一个模型对同一个想法
+会给出高度相似的分镜 —— 那三个变体就是白花钱。
+
+## 安装：`config/` 和 `skills/` 跟着包走
+
+源码仓库里它们是两个普通文件夹，wheel 里没有"仓库根"。所以 `ai_drama/resources.py`
+按三级找：`AI_DRAMA_HOME` → 包的两级父目录（源码 / `-e .`）→
+`sysconfig` 的 `share/ai-drama`（wheel 装到这里）。
+
+**找不到也不崩**：`catalog` 退回内置目录、`qc` 退回内置规则。这两个目录的作用是
+"可覆盖的默认值"，不是"必需品"—— 把可选的东西做成硬依赖，是零依赖卖点的反面。
+
 ## 想进一步读
 
 * [adding-a-provider.md](adding-a-provider.md) —— 换模型的那几十行

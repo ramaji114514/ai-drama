@@ -1,0 +1,193 @@
+"""产物路径约定。
+
+集中在一处，是为了让 dryrun 和真厂商的产物落在同一个位置 ---
+否则你切到真模型之后会得到两套目录结构，前一次的缓存全部失效、
+断点续跑也就无从谈起。
+
+目录结构：
+    projects/<project_id>/           跨集共用的东西（一部 60 集的片子只有一个）
+        project.json                 角色圣经（人工可编辑）
+        portraits/<角色名>.png        定妆照 —— 复用同一张是脸不漂的唯一硬保证
+    runs/<run_id>/
+        episode.json          分镜定稿（人工可编辑，改完可 resume）
+        character_<name>.png  定妆照
+        scenes/sc01/shot_000_keyframe.png
+        scenes/sc01/shot_000_clip.mp4
+        scenes/sc01/shot_000_audio.wav
+        scenes/sc01/scene_video.mp4
+        final_video.mp4
+        timeline.json         每个镜头在成片里的起止秒数
+        subtitles.srt         字幕交付物（标准 SRT）
+        subtitles.ass         烧录用的 ASS（带样式）
+        cost_report.json
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List
+
+
+def safe_name(name: str) -> str:
+    """把角色名变成能当文件名的形式。
+
+    中文名**原样保留**（`isalnum()` 对汉字为真），只滤掉路径分隔符之类的字符，
+    这样打开目录时看到的就是 `苏蔓.png` 而不是一串编号。
+    """
+    return "".join(ch for ch in (name or "") if ch.isalnum() or ch in "-_") or "char"
+
+
+def projects_root(root: Path) -> Path:
+    return Path(root) / "projects"
+
+
+def project_dir(root: Path, project_id: str) -> Path:
+    return projects_root(root) / project_id
+
+
+def project_json(root: Path, project_id: str) -> Path:
+    """角色圣经。放**项目**目录而不是 run 目录：它是全剧共用的设定，
+    跟着单次 run 走就等于每集重新投胎。"""
+    return project_dir(root, project_id) / "project.json"
+
+
+def project_portrait(root: Path, project_id: str, name: str) -> Path:
+    """角色在**项目**里的定妆照。
+
+    跨集一致性靠的不是"提示词写得像"，而是**每一集都复用同一个文件**。
+    只要这张图还在，第 40 集的脸和第 1 集就是同一张。
+    """
+    return project_dir(root, project_id) / "portraits" / f"{safe_name(name)}.png"
+
+
+def run_dir(root: Path, run_id: str) -> Path:
+    return Path(root) / "runs" / run_id
+
+
+def scene_dir(root: Path, run_id: str, scene_id: str) -> Path:
+    return run_dir(root, run_id) / "scenes" / scene_id
+
+
+def work_dir(root: Path, run_id: str, scene_id: str) -> Path:
+    return scene_dir(root, run_id, scene_id) / "_work"
+
+
+def episode_json(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "episode.json"
+
+
+def portrait(root: Path, run_id: str, name: str) -> Path:
+    safe = safe_name(name)
+    return run_dir(root, run_id) / f"character_{safe}.png"
+
+
+def portrait_variants(root: Path, run_id: str, name: str,
+                      project_id: str = "") -> List[Path]:
+    """这个角色名下**所有**的定妆照文件，按文件名排序。
+
+    为什么会有多张：重跑、换模型重渲、人工替换都会留下旧文件。多张脸
+    并存时"哪张算准"必须有个明确说法（见 core/faces.py），
+    否则后续十几集用哪张就变成了看目录顺序。
+
+    有项目时，项目的定妆照目录**也**要算进来 —— 项目模式下这一集用的
+    就是项目里那张，只扫 run 目录会得出"没有定妆照"这种明显错误的结论。
+    """
+    safe = safe_name(name)
+    out = sorted(run_dir(root, run_id).glob(f"character_{safe}*.png"))
+    if project_id:
+        out += sorted((project_dir(root, project_id) / "portraits").glob(f"{safe}*.png"))
+    return [p for p in out if p.is_file()]
+
+
+def keyframe(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_keyframe.png"
+
+
+def clip(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_clip.mp4"
+
+
+def clip_part(root: Path, run_id: str, scene_id: str, order: int, part: int) -> Path:
+    """长镜头被拆成多段时的第 part 段（从 1 开始）。
+
+    和 clip() 分开放，是为了让"这个镜头到底渲了几段"在文件系统上一眼可见 ——
+    排查"某镜为什么比别的贵"时，看目录就知道它被拆了几次。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_p{part:02d}_clip.mp4"
+
+
+def clip_parts(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    """该镜头已渲出的所有分段，按段号排序。"""
+    return sorted(
+        scene_dir(root, run_id, scene_id).glob(f"shot_{order:03d}_p*_clip.mp4")
+    )
+
+
+def voice(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_audio.wav"
+
+
+def sfx(root: Path, run_id: str, scene_id: str, order: int, index: int) -> Path:
+    """这一镜第 index 条音效。
+
+    带序号是因为一镜里可以有好几声（"门被撞开" + "雨声"）。它们不合并成一个
+    文件：合并之后就没法单独重跑其中一条、也没法调这一条的响度，
+    而重跑一条音效比重跑一条台词便宜得多。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_sfx{index:02d}.wav"
+
+
+def synced(root: Path, run_id: str, scene_id: str, order: int) -> Path:
+    """口型同步后的片段。
+
+    和 clip() 分开放是刻意的：原始片段必须留着 —— 换个 lip-sync 模型重跑、
+    或者对比"同步前后"时，你总得有东西可比；直接覆盖原片就没法回头了。
+    """
+    return scene_dir(root, run_id, scene_id) / f"shot_{order:03d}_synced.mp4"
+
+
+def scene_video(root: Path, run_id: str, scene_id: str) -> Path:
+    return scene_dir(root, run_id, scene_id) / "scene_video.mp4"
+
+
+def episode_video(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "final_video.mp4"
+
+
+def bgm(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "bgm.wav"
+
+
+def cost_report(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "cost_report.json"
+
+
+def qc_report(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "qc_report.json"
+
+
+def timeline(root: Path, run_id: str) -> Path:
+    """全片时间轴：每个镜头落在成片的哪一段。
+
+    字幕、音画对齐、以及"这一镜为什么比别的贵"的排查，都要用同一份时间轴。
+    写成文件是为了**可核对** —— 字幕飘了的时候，第一件事就是打开它看
+    每个镜头的起止秒数跟你以为的是不是一致。
+    """
+    return run_dir(root, run_id) / "timeline.json"
+
+
+def subtitles(root: Path, run_id: str) -> Path:
+    """字幕交付物（标准 SRT）。多数平台更希望你上传字幕轨，而不是烙在画面上。"""
+    return run_dir(root, run_id) / "subtitles.srt"
+
+
+def subtitle_ass(root: Path, run_id: str) -> Path:
+    """烧录用的 ASS。和 SRT 分开是刻意的：SRT 是给人/平台看的，
+    ASS 带样式与像素级坐标，是给 libass 看的，两者格式不能混用。"""
+    return run_dir(root, run_id) / "subtitles.ass"
+
+
+def rules_file(root: Path) -> Path:
+    """质检规则。放在**仓库根**而不是 run 目录里 —— 它是全项目共用的配置，
+    改一次所有片子都跟着变，不该跟着单次 run 走。"""
+    return Path(root) / "config" / "qc_rules.yaml"

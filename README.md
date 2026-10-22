@@ -30,6 +30,16 @@
 * FFmpeg（只有真的出片时才需要；只拿提示词不用装）
 * 一个会写字的大模型 API key（下面用 DeepSeek，几分钱一整集）
 
+想把它当系统命令用（不用每次 `cd` 到仓库里敲 `python run.py`）：
+
+```bash
+pipx install .        # 或者 pip install .
+ai-drama doctor      # 装完就有这个命令了
+```
+
+装完之后 `ai-drama` 和 `python run.py` 完全等价；`config/` 与 `skills/` 会跟着包
+一起装到 `<前缀>/share/ai-drama/`，想改默认值就改那里的（或者用 `AI_DRAMA_HOME` 指一份）。
+
 ### 1. 配一个大模型
 
 仓库里有一份 `.env.example`，复制成 `.env` 再填两行：
@@ -287,13 +297,16 @@ CSV 规则转义，所以不会错列；文件带 BOM，Windows 上双击不会�
 python run.py doctor                  # 环境自检：哪一步会用到哪个模型，key 配没配
 python run.py providers               # 已注册的 provider 和它们的状态
 python run.py web                     # 网页：分镜 / 时间轴 / 质检 / 成本 / 资产 / 成片
+python run.py mcp                     # MCP 服务器（stdio），给 Claude Code 这类客户端挂
+python run.py prompts --idea "一句话" --variants 3   # 一次出 3 个调度不同的版本挑一个
 ```
 
 | 命令 | 干什么 |
 | --- | --- |
 | `project new <名字>` | 建一部剧（角色圣经 + 风格，跨集复用） |
 | `run "<一句话>"` | 跑一条流水线 |
-| `prompts --idea "<一句话>"` | 只产提示词，打成 JSON 给脚本/agent 用 |
+| `prompts --idea "<一句话>"` | 只产提示词，打成 JSON 给脚本/agent 用（`--variants N` 出多个版本） |
+| `mcp` | MCP 服务器（stdio）：`write_prompts` / `lint_prompts` / `list_runs` |
 | `resume <run_id>` | 断点续跑，只跑还没做的部分 |
 | `status <run_id>` | 逐镜进度 |
 | `shots <run_id>` | 导出分镜表（`--format md` / `json` / `csv`） |

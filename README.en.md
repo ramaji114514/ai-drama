@@ -31,6 +31,18 @@ the prompts and never touch it.
 
 * Python 3.10+ (**no third-party packages** — the standard library is enough)
 * FFmpeg (only needed to actually render video; not needed for prompts alone)
+* A text-model API key (DeepSeek below; a fraction of a cent per episode)
+
+To use it as a system-wide command instead of `python run.py` from the repo:
+
+```bash
+pipx install .        # or pip install .
+ai-drama doctor
+```
+
+After installing, `ai-drama` and `python run.py` are interchangeable; `config/` and
+`skills/` ship inside the package at `<prefix>/share/ai-drama/` — edit those, or point
+`AI_DRAMA_HOME` at your own copy.
 * An API key for a model that can write (DeepSeek below; a whole episode costs cents)
 
 ### 1. Point it at a model
@@ -317,7 +329,8 @@ python run.py web                     # viewer: storyboard / timeline / QC / cos
 | --- | --- |
 | `project new <name>` | create a series (character bible + style, reused across episodes) |
 | `run "<one sentence>"` | run the whole pipeline |
-| `prompts --idea "<one sentence>"` | prompts only, as JSON for scripts/agents |
+| `prompts --idea "<one sentence>"` | prompts only, as JSON for scripts/agents (`--variants N` for several takes) |
+| `mcp` | MCP server (stdio): `write_prompts` / `lint_prompts` / `list_runs` |
 | `resume <run_id>` | resume, running only what is missing |
 | `status <run_id>` | per-shot progress |
 | `shots <run_id>` | export the storyboard (`--format md` / `json` / `csv`) |

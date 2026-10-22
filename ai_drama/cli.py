@@ -46,7 +46,16 @@ from .providers import registry
 from .providers.base import caps_of
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SKILLS_DIR = REPO_ROOT / "skills"
+
+
+def _skills_dir() -> Path:
+    """源码仓库里用 <仓库>/skills；装成 wheel 之后用打包进去的那份。"""
+    from . import resources
+
+    local = Path.cwd() / "skills"
+    if local.is_dir():
+        return local
+    return resources.skills_dir()
 
 
 def setup_console() -> None:
@@ -81,7 +90,11 @@ def load_env() -> None:
 
     刻意不把 python-dotenv 设成硬依赖 — 骨架要能零依赖启动。
     """
-    env_file = REPO_ROOT / ".env"
+    # 先看当前目录：装成命令之后，`.env` 该跟着**你用它的那个项目**走，
+    # 而不是跟着包安装路径走。源码仓库里再退回仓库根（老用法）。
+    env_file = Path.cwd() / ".env"
+    if not env_file.exists():
+        env_file = REPO_ROOT / ".env"
     if not env_file.exists():
         return
     try:
@@ -191,7 +204,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  [X] {kind:<7} {setting} -> 没注册过这个名字。可用：{avail}")
 
     print(f"\n数据库  {default_db_path()}")
-    print(f"skills  {SKILLS_DIR}  ({'存在' if SKILLS_DIR.exists() else '缺失'})")
+    skills_at = _skills_dir()
+    print(f"skills  {skills_at}  ({'存在' if skills_at.exists() else '缺失'})")
 
     if not ok:
         print("\n有阻断项未通过 — 先解决上面 [X] 的条目。")
@@ -1194,6 +1208,12 @@ def cmd_skills(args: argparse.Namespace) -> int:
     load_env()
     root = Path(args.root).resolve() if args.root else Path.cwd()
     metas = load_skills(root)
+    if not metas and not args.root:
+        # 装成命令之后当前目录通常没有 skills/ —— 退回随包发的那份默认值
+        bundled = _skills_dir()
+        if bundled.is_dir() and bundled.resolve() != (root / "skills").resolve():
+            root = bundled.parent
+            metas = load_skills(root)
     if not metas:
         print(f"[!] {root / 'skills'} 下没有技能")
         return 1
