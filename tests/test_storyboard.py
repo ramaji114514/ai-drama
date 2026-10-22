@@ -136,8 +136,15 @@ def test_a_real_run_names_the_reference_image_and_renders_a_portrait(
     assert locked, "没有任何镜头写进参考锁定段 —— 参考图等于没传"
     for s in locked:
         assert "@图片1" in s["image_prompt"]
-        # 听觉信息永远不许进画面提示词
-        assert "台词" not in s["video_prompt"]
+    # 听觉信息永远不许进画面提示词：台词内容不抄进提示词。
+    # （"口型与台词同步"这类**动作提示**是允许的，它说的是嘴要动，
+    #   不是把台词念给模型听 —— 模型听到台词会自己编配音。）
+    for scene in ep["scenes"]:
+        for s in scene["shots"]:
+            spoken = (s.get("dialogue") or "").strip()
+            if spoken:
+                assert spoken not in s["video_prompt"]
+            assert "配音" not in s["video_prompt"]
 
 
 @pytest.mark.ffmpeg
