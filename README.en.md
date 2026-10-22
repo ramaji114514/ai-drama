@@ -352,7 +352,7 @@ python run.py run "one sentence" \
 
 ## For scripts and agents
 
-The web page is for humans. To get prompts into **another program**, there are three
+The web page is for humans. To get prompts into **another program**, there are four
 routes, easiest first:
 
 ### 1. JSON straight from the command line
@@ -388,7 +388,40 @@ truncated to its character limit) and `dropped` (fields it lacks, with the reaso
 spelled out). The original five blocks stay as they were — truncation is lossy, and
 you need the original to edit.
 
-### 2. Let an agent call it (skill entry point)
+### 2. Let an agent call it directly (MCP server)
+
+Rather than making an agent assemble shell commands, mount this as an MCP server —
+Claude Code, Cursor and friends will discover the three tools themselves:
+
+```json
+{
+  "mcpServers": {
+    "ai-drama": { "command": "python", "args": ["run.py", "mcp"], "cwd": "/path/to/ai-drama" }
+  }
+}
+```
+
+| Tool | What it does |
+| --- | --- |
+| `write_prompts` | One sentence → anchor / first frame / last frame / camera / negative (text model only, no images) |
+| `lint_prompts` | Check a run: too long, camera too fast, line with no mouth moving, missing negatives |
+| `list_runs` | Recent runs: title, state, total seconds |
+
+stdio transport, one JSON-RPC message per line; all logging goes to stderr, so the
+client only ever sees protocol. Hand-written with zero dependencies: the whole protocol surface used here is three
+methods (initialize, tools/list, tools/call), which doesn't justify pulling in an SDK.
+
+Want a few options to pick from? `--variants`:
+
+```bash
+python run.py prompts --idea "one sentence" --variants 3 --json out.json
+# out.v1.json / out.v2.json / out.v3.json, plus a comparison table on stderr
+```
+
+Variants aren't "run it again and hope": each one gets an explicit *different opening,
+different ending* instruction, otherwise the same model gives near-identical boards.
+
+### 3. Let an agent call it (skill entry point)
 
 The repo ships an agent note: [`agent/SKILL.md`](agent/SKILL.md). It explains when
 to use this tool, how to call it, what the JSON looks like, and the three most
@@ -416,7 +449,7 @@ Once installed you can just say:
 The agent runs `python run.py prompts` and hands you first frame / last frame /
 camera separately, instead of one wall of text.
 
-### 3. Copy from the page
+### 4. Copy from the page
 
 The dumbest and most direct route: `python run.py web`, open the storyboard tab, and
 every prompt block has a **Copy** button; **Export all prompts** saves the whole

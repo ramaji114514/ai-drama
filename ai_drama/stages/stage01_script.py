@@ -31,7 +31,8 @@ _MUSIC_WORDS = re.compile(
 
 
 def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
-                 shots_per_scene: int = 4, scripture: str = "") -> str:
+                 shots_per_scene: int = 4, scripture: str = "",
+                 notes: str = "") -> str:
     """把 idea 包装成给文本模型的指令。
 
     刻意把"镜头数/场次数"作为**显式参数**而不是让模型自由发挥：
@@ -45,9 +46,12 @@ def build_prompt(idea: str, *, style: str = "", scene_count: int = 3,
     # 角色圣经接在"想法"后面、硬性要求前面：模型先看到"这部剧已经有哪些人、
     # 长什么样"，再去排场次。放到最后面容易被当成补充说明忽略掉。
     bible_line = f"\n\n{scripture}" if scripture else ""
+    # 「额外要求」是**变体**用的：同一句话要出 N 个不同调度时，这是唯一让
+    # 两次生成真正分开的输入。不给就完全不出现在提示词里。
+    note_line = f"\n\n额外要求：{notes}" if notes.strip() else ""
     return f"""把一个想法展开成一部竖屏短剧的分镜表。
 
-想法：{idea}{style_line}{bible_line}
+想法：{idea}{style_line}{bible_line}{note_line}
 
 硬性要求：
 1. 共 {scene_count} 场，每场 {shots_per_scene} 个镜头，严格按顺序编号。
@@ -145,6 +149,7 @@ def run(ctx: StageContext) -> StageReport:
         scene_count=scene_count,
         shots_per_scene=shots_per_scene,
         scripture=scripture,
+        notes=str(ctx.run.meta.get("notes") or ""),
     )
 
     ctx.log(f"[script] 调用 {ctx.bundle.text.name} 生成分镜…")

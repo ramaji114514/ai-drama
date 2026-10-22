@@ -328,7 +328,7 @@ python run.py run "一句话" \
 
 ## 给脚本和 agent 用
 
-网页是给人看的。要让**别的程序**拿提示词，有三条路，按省事程度排：
+网页是给人看的。要让**别的程序**拿提示词，有四条路，按省事程度排：
 
 ### 一、命令行直接吐 JSON
 
@@ -362,7 +362,42 @@ python run.py prompts --idea "一句话" --dialect jimeng --json out.json
 和 `dropped`（这家没有的字段，连同"为什么省掉"一起写明）。原来的五段照样留着
 —— 截断是有损的，想改还得有原文。
 
-### 二、让 agent 自己去调（skill 入口）
+### 二、让 agent 直接调（MCP 服务器）
+
+不想让 agent 去 shell 里拼命令，就把它挂成 MCP 服务器 —— Claude Code、Cursor
+这类支持 MCP 的客户端会自己发现这三个工具：
+
+```json
+{
+  "mcpServers": {
+    "ai-drama": { "command": "python", "args": ["run.py", "mcp"], "cwd": "/你的/ai-drama" }
+  }
+}
+```
+
+| 工具 | 干什么 |
+| --- | --- |
+| `write_prompts` | 一句话 → 定妆照/首帧/尾帧/运镜/负向词（只调文本模型，不出图） |
+| `lint_prompts` | 体检一条 run：太长、运镜太快、有台词没开口、缺负向词 |
+| `list_runs` | 最近的 run：标题、状态、总时长 |
+
+stdio 传输，一行一个 JSON-RPC；日志全走 stderr，所以客户端永远只看到协议本身。
+零依赖手写：MCP 这一层只用得上三个方法（initialize、tools/list、tools/call），
+不值得为此装一套 SDK。
+
+想要几个版本挑一个，加 `--variants`：
+
+```bash
+python run.py prompts --idea "一句话" --variants 3 --json out.json
+# 得到 out.v1.json / out.v2.json / out.v3.json，stderr 上还有一张对照表：
+# 变体  镜数  总时长  片名
+#   1     4    60.0s  雨夜旧书店  (run_...)
+```
+
+变体不是"重跑一遍碰运气"：每个变体会拿到一句**换开场、换结尾**的额外要求，
+否则同一个模型对同一个想法会给出高度相似的分镜。
+
+### 三、让 agent 自己去调（skill 入口）
 
 仓库里带了一份 agent 说明：[`agent/SKILL.md`](agent/SKILL.md)。它写清了什么时候该
 用这个工具、怎么调、JSON 长什么样、粘提示词时最容易翻车的三件事。放进你用的
@@ -389,7 +424,7 @@ cp agent/SKILL.md ~/.agents/skills/ai-drama-prompts/
 agent 会跑 `python run.py prompts`，把拿到的首帧/尾帧/运镜分开给你，而不是
 把一整段文字糊在一起。
 
-### 三、网页上复制
+### 四、网页上复制
 
 最笨也最直观的一条：`python run.py web` 打开分镜页，每段提示词后面都有「复制」，
 顶上还有「导出全部提示词」把整集存成 `.txt`。适合手动挑几镜去出。

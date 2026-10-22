@@ -25,7 +25,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .core import assets as assetslib, dialects, media, paths, project
@@ -279,19 +279,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result["state"] == "done" else 2
 
 
-def cmd_prompts(args: argparse.Namespace) -> int:
-    """一句话 → 提示词包。只跑 script + storyboard，一台图模型都不碰。
-
-    存在的理由是**给别的程序用**：agent 要的是一段能 `json.load` 的文本，
-    不是一张带小标题的漂亮页面。所以这条命令默认把 JSON 打到 stdout，
-    进度写 stderr —— 管道不会因为"阶段报告"混进来而解不开。
-
-    出图/出片是另一回事：这里一个 provider 调用（除文本模型外）都不会发生，
-    定妆照和关键帧全是占位。想要的图在 `run.py resume <id> --stages frames`。
-    """
+def _one_prompt_bundle(args: argparse.Namespace, notes: str = "") -> Tuple[dict, str]:
+    """跑一次 script + storyboard，回 (提示词包, run_id)。"""
     from .core import export
 
-    load_env()
     store = open_store(args)
     root = Path(args.root).resolve() if getattr(args, "root", None) else Path.cwd()
     bundle_providers = registry.build_bundle()
@@ -310,35 +301,106 @@ def cmd_prompts(args: argparse.Namespace) -> int:
         scenes=args.scenes,
         shots_per_scene=args.shots,
         voice=args.voice,
+        notes=notes,
     )
     # 只跑这两个阶段：提示词在这里就齐了，后面的阶段是花钱的
     result = pipe.run(run, stages=["script", "storyboard"])
     if result.get("state") == "failed":
-        print(f"没跑成：{result.get('error') or '见上面的报告'}", file=sys.stderr)
-        return 2
-
+        raise RuntimeError(str(result.get("error") or "阶段失败"))
     ep = store.get_episode(run.run_id)
     if ep is None:
-        print("没有 episode（脚本阶段没落盘？）", file=sys.stderr)
-        return 2
+        raise RuntimeError("没有 episode（脚本阶段没落盘？）")
     data = export.bundle(ep, aspect=str((run.meta or {}).get("aspect") or ""),
                          dialect=getattr(args, "dialect", "") or "")
+    return data, run.run_id
+
+
+def _variant_notes(k: int, total: int) -> str:
+    """第 k 个变体的额外要求。
+
+    变体不是"重跑一遍碰运气" —— 那句"换一个不同的开场"是**唯一**让两次生成
+    真正分开的输入。不写它，同一个模型给同一个想法会给出高度相似的骨架。
+    """
+    if total <= 1:
+        return ""
+    return (f"这是同一个想法的第 {k} 个变体（共 {total} 个）。"
+            "请换一个**不同的开场方式**和**不同的结尾落点**，"
+            "人物关系与核心冲突保持不变；避免和第 1 个变体雷同的镜头调度。")
+
+
+def _compare(rows: List[Tuple[int, str, dict]]) -> str:
+    """一行一版：镜数、总时长、片名。挑变体靠这个表，不靠翻 JSON。"""
+    lines = ["变体  镜数  总时长  片名"]
+    for k, run_id, data in rows:
+        shots = sum(len(sc["shots"]) for sc in data["scenes"])
+        secs = sum(float(sh.get("duration") or 0) for sc in data["scenes"]
+                   for sh in sc["shots"])
+        lines.append(f"  {k}    {shots:>2}   {secs:>5.1f}s  {data.get('title') or ''}"
+                     f"  ({run_id})")
+    return "\n".join(lines)
+
+
+def cmd_prompts(args: argparse.Namespace) -> int:
+    """一句话 → 提示词包。只跑 script + storyboard，一台图模型都不碰。
+
+    存在的理由是**给别的程序用**：agent 要的是一段能 `json.load` 的文本，
+    不是一张带小标题的漂亮页面。所以这条命令默认把 JSON 打到 stdout，
+    进度写 stderr —— 管道不会因为"阶段报告"混进来而解不开。
+
+    出图/出片是另一回事：这里一个 provider 调用（除文本模型外）都不会发生，
+    定妆照和关键帧全是占位。想要的图在 `run.py resume <id> --stages frames`。
+    """
+    load_env()
+    variants = max(1, int(getattr(args, "variants", 1) or 1))
+    rows: List[Tuple[int, str, dict]] = []
+    try:
+        for k in range(1, variants + 1):
+            data, run_id = _one_prompt_bundle(args, _variant_notes(k, variants))
+            rows.append((k, run_id, data))
+    except RuntimeError as exc:
+        print(f"没跑成:{exc}", file=sys.stderr)
+        return 2
 
     out = getattr(args, "json", "") or ""
+    if variants == 1:
+        data = rows[0][2]
+        if out and out != "-":
+            dest = Path(out)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8", newline="\n")
+            shots = sum(len(sc["shots"]) for sc in data["scenes"])
+            print(f"拿到 {len(data['characters'])} 个角色、{len(data['scenes'])} 场 "
+                  f"{shots} 镜的提示词 → {dest}", file=sys.stderr)
+            print(f"run {rows[0][1]}", file=sys.stderr)
+        else:
+            # stdout 只有 JSON：管道那头 `| jq .` 直接能用
+            print(json.dumps(data, ensure_ascii=True, indent=2))
+            print(f"run {rows[0][1]}", file=sys.stderr)
+        return 0
+
+    # 多版：默认把对照表写 stderr、把 N 份包写成 JSON 数组打到 stdout。
+    # 想拆成文件就给 --json 一个路径，会写成 <名字>.v1.json / .v2.json …
+    print(_compare(rows), file=sys.stderr)
+    payload = [data for _, _, data in rows]
     if out and out != "-":
         dest = Path(out)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8", newline="\n")
-        shots = sum(len(sc["shots"]) for sc in data["scenes"])
-        print(f"拿到 {len(data['characters'])} 个角色、{len(data['scenes'])} 场 "
-              f"{shots} 镜的提示词 → {dest}", file=sys.stderr)
-        print(f"run {run.run_id}", file=sys.stderr)
+        for k, run_id, data in rows:
+            one = dest.with_name(f"{dest.stem}.v{k}{dest.suffix or '.json'}")
+            one.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8", newline="\n")
+            print(f"变体 {k} → {one}（run {run_id}）", file=sys.stderr)
     else:
-        # stdout 只有 JSON：管道那头 `| jq .` 直接能用
-        print(json.dumps(data, ensure_ascii=True, indent=2))
-        print(f"run {run.run_id}", file=sys.stderr)
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
     return 0
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """stdio 上跑 MCP：一行一个 JSON-RPC。日志一律走 stderr。"""
+    from . import mcp_server
+
+    return mcp_server.serve()
 
 
 def import_episode_json(root: Path, store: Any, run_id: str) -> Optional[int]:
@@ -1339,11 +1401,16 @@ def build_parser() -> argparse.ArgumentParser:
                     metavar="PLATFORM",
                     help="按某家网页端的框整理一遍（"
                          + "/".join(dialects.keys()) + "）；不给就是通用写法")
+    sp.add_argument("--variants", type=int, default=1, metavar="N",
+                    help="一次出 N 个不同调度的变体，挑一个（默认 1）")
     sp.add_argument("--budget", type=float, default=0.0)
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--aspect", default="", metavar="W:H")
     add_common(sp)
     sp.set_defaults(func=cmd_prompts)
+
+    sp = sub.add_parser("mcp", help="MCP 服务器（stdio）：让 agent 直接调提示词")
+    sp.set_defaults(func=cmd_mcp)
 
     sp = sub.add_parser("resume", help="断点续跑")
     sp.add_argument("run_id")
