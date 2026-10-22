@@ -91,8 +91,16 @@ that shot's keyframe with the new prompt (just this shot, not the episode).
 Text rendered for other platforms is truncated and read-only — switch back to
 "generic" to edit, then switch again.
 
+You can also edit the story itself — **Edit the shot text** lets you change the
+action, the line, the framing and the end frame without touching `episode.json`.
+Saving it re-composes the first frame / last frame / camera / negative prompts
+from the local skeleton and re-times the shot; a longer line makes a longer shot,
+because the dialogue is the hard floor on duration.
+
 The page binds to localhost only and never creates runs or spends money: the only
-write paths are "edit a prompt" and "re-run this shot".
+write paths are "edit a prompt", "edit the shot text" and "re-run this shot".
+Cast can't be edited here on purpose — it drags the reference images and identity
+locking with it, and one mis-click would silently swap a face.
 
 > Prefer no browser, and want a **script or agent** to take the prompts directly?
 > `python run.py prompts --idea "one sentence" --json out.json` gives you the same

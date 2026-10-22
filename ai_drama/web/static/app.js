@@ -55,7 +55,7 @@ function fileLink(ref) {
 const mediaURL = (ref) => (ref && ref.exists ? esc(ref.url) : '');
 
 const state = { runs: [], projects: [], data: null, tab: 'storyboard', asset: null,
-                dialect: 'generic', dialects: {} };
+                dialect: 'generic', dialects: {}, framings: [] };
 
 /* ————————————————————————————————— 路由 ————————————————————————————————— */
 /* `#/run/<id>[/<tab>]` 或 `#/project/<id>`。
@@ -161,6 +161,7 @@ async function openRun(runId) {
     .catch(() => []);
   state.tab = state.tab || 'storyboard';
   // 目标平台记在内存里（刷新回到通用）：这是"给谁写的"，不是 run 的属性。
+  state.framings = (((state.data || {}).storyboard || {}).framings) || [];
   state.dialects = Object.fromEntries(
     (((state.data || {}).storyboard || {}).dialects || []).map((x) => [x.key, x]));
   if (!state.dialects[state.dialect]) state.dialect = 'generic';
@@ -565,12 +566,71 @@ function shotCard(sh) {
       ${shotPrompts(sh)}
       <div class="row"><button class="cp" onclick="rerunShot('${esc(sh.label)}')"
         title="只重跑这一镜：用现在的提示词重出关键帧">重跑这一镜</button></div>
+      ${storyEditor(sh)}
       ${sfx ? `<div class="sfx">音效：${sfx}</div>` : ''}
       ${sh.characters && sh.characters.length
         ? `<div class="sfx">出镜：${esc(sh.characters.join('、'))}</div>`
         : (sh.declared ? '<div class="sfx">出镜：声明为空镜</div>' : '')}
       ${sh.error ? `<div class="err">${esc(sh.error)}</div>` : ''}
     </div></div>`;
+}
+
+// 分镜原文编辑器：动作、台词、结束画面、景别。
+//
+// 这四样是**骨架的原料**，不是成品：改完必须让后端用本地骨架重拼提示词、
+// 重算时长。只在页面上改文字、不重拼，等于骗自己 —— 出图还是旧画面。
+function storyEditor(sh) {
+  const framings = state.framings || [];
+  const opts = framings.map((f) => `<option value="${esc(f.key)}"${
+    f.key === sh.framing ? ' selected' : ''}>${esc(f.title)}</option>`).join('');
+  return `<details class="prompts">
+    <summary>改分镜原文（保存后自动重拼提示词）</summary>
+    <div class="pf">
+      <div class="pfhead"><b>景别</b><span class="dim">改了会换镜头语言</span>
+        <button class="cp" onclick="saveStory(this)">保存并重拼</button></div>
+      <select class="pftext" data-field="framing">${opts}</select>
+    </div>
+    <div class="pf">
+      <div class="pfhead"><b>动作</b><span class="dim">这一镜演什么</span></div>
+      <textarea class="pftext" data-field="action" rows="3">${esc(sh.action || '')}</textarea>
+    </div>
+    <div class="pf">
+      <div class="pfhead"><b>台词</b><span class="dim">「名字：内容」；台词长短决定时长</span></div>
+      <textarea class="pftext" data-field="dialogue" rows="2">${esc(sh.dialogue || '')}</textarea>
+    </div>
+    <div class="pf">
+      <div class="pfhead"><b>结束画面</b><span class="dim">尾帧的原料，空着会退回首帧动作</span></div>
+      <textarea class="pftext" data-field="end_action" rows="2">${esc(sh.end_action || '')}</textarea>
+    </div>
+  </details>`;
+}
+
+function saveStory(btn) {
+  const box = btn.closest('details');
+  const shot = btn.closest('.shot');
+  const label = shot.querySelector('.label').textContent.trim();
+  const body = {};
+  box.querySelectorAll('[data-field]').forEach((el) => {
+    const key = el.getAttribute('data-field');
+    const now = (el.value || '').trim();
+    const was = (el.defaultValue || '').trim();
+    // 只发改过的字段：没动的字段不该被重拼一遍（重拼会覆盖手改过的提示词）
+    if (now !== was) body[key] = now;
+  });
+  if (!Object.keys(body).length) { note('没有改动'); return; }
+  btn.disabled = true;
+  fetch(`/api/runs/${encodeURIComponent(state.runId)}/shots/${label}/story`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+    .then((res) => {
+      if (!res.ok) throw new Error(res.d.error || '保存失败');
+      const warns = (res.d.shot.lint || []).filter((f) => f.level === 'warn');
+      note(warns.length ? `已重拼，体检 ${warns.length} 条提醒` : '已保存并重拼提示词');
+      openRun(state.runId);
+    })
+    .catch((e) => { btn.disabled = false; note(e.message, true); });
 }
 
 function bindLightbox() {

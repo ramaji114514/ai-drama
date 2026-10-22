@@ -532,19 +532,27 @@ id 由 `sha1(f"{run_id}\n{相对路径}")[:12]` 推导，**不是随机数**：�
 上一次还在跑吗、预算是多少、失败了谁负责。所以**建 run 的入口没有**：`POST /api/runs`
 是 404，`do_PUT` / `do_DELETE` 一律 405。
 
-写入口只有两个，都发生在**已经有产物**的 run 上：
+写入口只有三个，都发生在**已经有产物**的 run 上：
 
 | 接口 | 干什么 |
 |---|---|
 | `POST /api/runs/<id>/shots/<label>/prompt` | 改一镜的提示词（`episode.json` + 库两处一起写） |
+| `POST /api/runs/<id>/shots/<label>/story` | 改动作/台词/景别/结束画面，然后用**本地骨架**重拼提示词、重算时长 |
 | `POST /api/runs/<id>/rerun` | 只重跑这几镜，后台线程执行，回一个 job id 让页面轮询 |
 
 为什么必须两处一起写：`resume` 时 Pipeline 从库里取 episode（`store.get_episode`），
 只改文件不改库，重跑会拿旧提示词再算一遍 —— 页面显示新值、画面还是旧的，是最难查的
 那种"看起来生效了"。所以 `core/editing.py` 的顺序固定为"先写盘，再回灌"。
 
-可改字段是白名单（`editing.PROMPT_FIELDS`）：五段提示词 + `end_action`。动作、台词、
-出镜人改了会牵连景别/参考图/时长，仍然走 `resume --from-json`。
+改分镜走另一条白名单（`editing.STORY_FIELDS`）：`action` / `dialogue` / `end_action` /
+`framing`。这四样是**提示词的原料**，所以保存后必须重拼，否则就是"改了动作、页面显示
+新动作、出图还是旧画面"。重拼在 `core/editing._compose` 里：调 `stage02_storyboard`
+的 `compose_image_prompt` / `compose_last_frame` / `compose_video_prompt` /
+`compose_negative_prompt` / `compose_video_negative`，再用 `estimate_shot_seconds`
+按时长公式重算（台词是硬下限）。
+
+**出镜人不在白名单里**：它牵连参考图顺序和身份锁定，改错一次会静默换掉整镜的脸。
+真要换人，走 `resume --from-json`，那条路上有 `unlocked_names` 和参考图上限的告警。
 
 页面的职责是把已经落在磁盘上的东西呈现出来：分镜长什么样、关键帧是哪张、字幕落在
 第几秒、质检那几条 `unchecked` 到底是什么。

@@ -179,3 +179,82 @@ def test_the_page_can_save_a_prompt_over_http(made):
             payload = json.loads(r.read())
     shots = payload["storyboard"]["scenes"][0]["shots"]
     assert shots[0]["last_frame"] == "猫抬头看向窗外"
+
+
+# —————————————————————————————— 改分镜原文 → 本地骨架重拼（不花钱）
+
+
+def test_changing_the_action_rewrites_the_prompts_in_both_copies(made):
+    """改动作不重拼 = 假成功：页面写着新动作，出图还是旧画面。"""
+    root, store, run_id = made
+    label = "sc01/shot_000"
+    shot = editing.update_story(root, run_id, label,
+                                {"action": "她把伞收拢，水滴顺着伞骨滴到地板上"},
+                                store=store)
+    assert "她把伞收拢" in shot["action"]
+    assert "她把伞收拢" in shot["image_prompt"]
+    # 尾帧跟的是 end_action（dryrun 会写），不是 action —— 所以这里不变
+    assert "她把伞收拢" not in shot["last_frame"]
+    # 把结束画面清空，尾帧才退回首帧动作
+    shot = editing.update_story(root, run_id, label, {"end_action": ""}, store=store)
+    assert "她把伞收拢" in shot["last_frame"]
+
+    on_disk = _episode(root, run_id)["scenes"][0]["shots"][0]
+    assert "她把伞收拢" in on_disk["image_prompt"]
+    assert "她把伞收拢" in store.get_episode(run_id).shots[0].image_prompt
+
+
+def test_a_longer_line_changes_the_duration(made):
+    """台词是时长的硬下限 —— 改长台词，秒数必须跟着涨。"""
+    root, store, run_id = made
+    label = "sc01/shot_000"
+    before = _episode(root, run_id)["scenes"][0]["shots"][0]["duration"]
+    long_line = "林溪：" + "我今天一定要把这件事说清楚" * 4
+    shot = editing.update_story(root, run_id, label, {"dialogue": long_line},
+                                store=store)
+    assert shot["duration"] > before
+
+
+def test_changing_the_framing_changes_the_lens_words(made):
+    root, store, run_id = made
+    label = "sc01/shot_000"
+    shot = editing.update_story(root, run_id, label, {"framing": "wide"}, store=store)
+    assert "全景" in shot["image_prompt"] or "全身" in shot["image_prompt"]
+
+
+def test_an_unknown_field_is_refused_before_anything_is_written(made):
+    """出镜人牵连参考图和身份锁定，点错一次会静默换掉整镜的脸。"""
+    root, store, run_id = made
+    before = _episode(root, run_id)
+    with pytest.raises(editing.EditError) as exc:
+        editing.update_story(root, run_id, "sc01/shot_000",
+                             {"characters": "[]"}, store=store)
+    assert "characters" in exc.value.message
+    assert _episode(root, run_id) == before
+
+
+def test_an_empty_action_or_a_bogus_framing_is_refused(made):
+    root, store, run_id = made
+    with pytest.raises(editing.EditError):
+        editing.update_story(root, run_id, "sc01/shot_000", {"action": "   "},
+                             store=store)
+    with pytest.raises(editing.EditError) as exc:
+        editing.update_story(root, run_id, "sc01/shot_000", {"framing": "dutch"},
+                             store=store)
+    assert "景别" in exc.value.message
+
+
+def test_the_story_endpoint_recomposes_over_http(made):
+    root, store, run_id = made
+    label = "sc01/shot_000"
+    db = root / "runs" / "test.sqlite3"
+    with _serve(root, db) as base:
+        body = json.dumps({"action": "他停下脚步，回头看了一眼"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base}/api/runs/{run_id}/shots/{label}/story", data=body,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            got = json.loads(resp.read().decode("utf-8"))
+    assert got["ok"] is True
+    assert "他停下脚步" in got["shot"]["image_prompt"]
+    assert isinstance(got["shot"]["lint"], list)

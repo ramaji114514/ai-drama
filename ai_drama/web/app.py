@@ -220,6 +220,10 @@ class WebApp:
                 run_id, _, label = tail[: -len("/prompt")].partition("/shots/")
                 if run_id and label:
                     return self._edit_prompt(run_id, label, body)
+            if tail.endswith("/story") and "/shots/" in tail:
+                run_id, _, label = tail[: -len("/story")].partition("/shots/")
+                if run_id and label:
+                    return self._edit_story(run_id, label, body)
             if tail.endswith("/rerun"):
                 run_id = tail[: -len("/rerun")].strip("/")
                 if run_id and "/" not in run_id:
@@ -234,6 +238,31 @@ class WebApp:
         if not isinstance(data, dict):
             raise editing.EditError("请求体要是一个对象")
         return data
+
+    def _edit_story(self, run_id: str, label: str, body: bytes) -> Response:
+        """改动作/台词/结束画面/景别，然后用本地骨架重拼提示词。"""
+        from ..providers import registry
+        from ..providers.base import caps_of
+
+        store = self.store()
+        try:
+            data = self._body_json(body)
+            fields = {k: str(v) for k, v in data.items()
+                      if k in editing.STORY_FIELDS and v is not None}
+            if not fields:
+                raise editing.EditError(
+                    f"没有要改的字段（可改：{'、'.join(editing.STORY_FIELDS)}）")
+            # 参考图名额要问 provider：换一家支持多张参考图的模型，
+            # 这里重拼出来的提示词就该跟着变，不能写死 1。
+            max_refs = int(getattr(caps_of(registry.build_bundle().image),
+                                   "max_ref_images", 1) or 1)
+            shot = editing.update_story(self.root, run_id, label, fields,
+                                        store=store, max_refs=max_refs)
+            return self._json({"ok": True, "shot": shot})
+        except editing.EditError as exc:
+            return self._json({"error": exc.message}, exc.code)
+        finally:
+            store.close()
 
     def _edit_prompt(self, run_id: str, label: str, body: bytes) -> Response:
         store = self.store()

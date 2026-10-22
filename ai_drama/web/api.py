@@ -26,6 +26,7 @@ from .. import __version__
 from ..core import assets as assetslib
 from ..core import dialects
 from ..core import paths
+from ..stages.stage02_storyboard import FRAMING_PROMPT
 from ..core import project as projectlib
 
 #: `/media` 允许读出去的目录前缀（相对工作目录）。
@@ -277,6 +278,9 @@ def storyboard_payload(root: Path, store: Any, run_id: str, ep: Any) -> Dict[str
         "seconds": round(float(ep.total_duration or 0.0), 3),
         # 整部目标：0 表示没定。页面拿它和 seconds 比，显示"目标/实际"。
         "target_seconds": round(float(getattr(ep, "target_seconds", 0.0) or 0.0), 3),
+        # 景别选项：页面上的下拉框不要自己抄一份 —— 抄的那份会在有人
+        # 往 FRAMING_PROMPT 里加一个景别之后悄悄少一项。
+        "framings": [{"key": k, "title": v} for k, v in FRAMING_PROMPT.items()],
     }
 
 

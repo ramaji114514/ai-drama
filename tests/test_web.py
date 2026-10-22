@@ -86,6 +86,16 @@ def _post(url: str, data: bytes = b"{}"):
 # ————————————————————————————————————————----
 
 
+def test_the_page_can_edit_the_story_itself_not_just_the_prompts():
+    """改分镜原文是"改提示词"的上游：动作变了，首帧/尾帧/运镜都得跟着重拼。"""
+    page = (Path(__file__).resolve().parents[1] / "ai_drama" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    for bit in ("function storyEditor", "function saveStory", "/shots/${label}/story",
+                "重拼", "data-field=\"action\"", "data-field=\"dialogue\"",
+                "data-field=\"end_action\"", "data-field=\"framing\""):
+        assert bit in page, bit
+    # 只发改过的字段：否则一次保存会把手工调过的提示词全部覆盖掉
+    assert "now !== was" in page
+
 def test_only_the_two_artifact_folders_can_be_read(workspace: Path):
     """白名单是目录级的。`config/`、`.env`、仓库根下的任何东西都不给。"""
     for rel in ("config/qc_rules.yaml", ".env", "run.py", "ai_drama/cli.py",
