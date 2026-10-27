@@ -189,3 +189,10 @@ video{width:100%;max-width:900px;background:#000;border-radius:8px}
         border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
         color: var(--dim); background: transparent; }
 .lang:hover { color: var(--fg); border-color: var(--dim); }
+
+/* 侧栏搜索框：跟列表头一样宽，但不抢列表的视线 */
+.q { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px;
+     padding: 6px 9px; margin-bottom: 10px; color: var(--fg);
+     background: #0e1319; border: 1px solid var(--line); border-radius: 7px; }
+.q:focus { outline: none; border-color: var(--dim); }
+.q::placeholder { color: var(--dim); }

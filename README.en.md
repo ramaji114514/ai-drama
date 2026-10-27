@@ -109,6 +109,8 @@ Saving it re-composes the first frame / last frame / camera / negative prompts
 from the local skeleton and re-times the shot; a longer line makes a longer shot,
 because the dialogue is the hard floor on duration.
 
+The sidebar has a search box: type part of a title, a word from the idea, or the tail of a `run_id` — it filters the run list and the project list together, and the count turns into `3/5` so you can tell filtering from a short list.
+
 There's an **EN / 中文** button in the top right: one click and the UI is English, and it stays that way (or pass `?lang=en`). Only the interface is translated — the prompts, the lines and the storyboard JSON are never touched, because those are the content you paste elsewhere.
 
 The page binds to localhost only and never creates runs or spends money: the only

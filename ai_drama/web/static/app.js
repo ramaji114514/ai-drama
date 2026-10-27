@@ -55,7 +55,8 @@ function fileLink(ref) {
 const mediaURL = (ref) => (ref && ref.exists ? esc(ref.url) : '');
 
 const state = { runs: [], projects: [], data: null, tab: 'storyboard', asset: null,
-                dialect: 'generic', dialects: {}, framings: [] };
+                dialect: 'generic', dialects: {},
+  query: '', framings: [] };
 
 /* ————————————————————————————————— 路由 ————————————————————————————————— */
 /* `#/run/<id>[/<tab>]` 或 `#/project/<id>`。
@@ -98,6 +99,15 @@ async function boot() {
   state.projects = await getJSON('/api/projects');
   renderRuns();
   renderProjects();
+  const q = $('#q');
+  if (q) {
+    q.value = state.query || '';
+    q.oninput = () => {
+      state.query = q.value;
+      renderRuns();
+      renderProjects();
+    };
+  }
   if (!route() && state.runs.length) go('#/run/' + state.runs[0].run_id);
   // 顶层 const 不会挂到 window 上，只能用这个名字判断它有没有定义
   if (typeof I18N !== 'undefined') {
@@ -108,14 +118,30 @@ async function boot() {
 }
 
 
+/* 搜索：一个框过滤两个列表。
+ * 没引入任何下拉菜单，因为大家找 run 就是凭记忆里的一个词：
+ * 剧名、这一句想法、run_id 的尾巴、“第 2 集”。所以把能看到的字全拿去匹配。 */
+function matches(text) {
+  const q = (state.query || '').trim().toLowerCase();
+  if (!q) return true;
+  return String(text || '').toLowerCase().includes(q);
+}
+
 function renderRuns() {
-  $('#runcount').textContent = state.runs.length ? `(${state.runs.length})` : '';
-  if (!state.runs.length) {
-    $('#runs').innerHTML = '<li class="dim" style="cursor:default">还没有 run。' +
-      '先 <code>python run.py run --idea "..."</code></li>';
+  const all = state.runs || [];
+  const runs = all.filter((r) => matches(
+    [r.title, r.idea, r.run_id, r.stage, r.state, r.episode_no].filter(Boolean).join(' ')));
+  $('#runcount').textContent = runs.length === all.length
+    ? (all.length ? `(${all.length})` : '')
+    : `(${runs.length}/${all.length})`;
+  if (!runs.length) {
+    $('#runs').innerHTML = all.length
+      ? '<li class="dim" style="cursor:default">没有匹配的 run。</li>'
+      : '<li class="dim" style="cursor:default">还没有 run。' +
+        '先 <code>python run.py run --idea "..."</code></li>';
     return;
   }
-  $('#runs').innerHTML = state.runs.map((r) => {
+  $('#runs').innerHTML = runs.map((r) => {
     const no = r.episode_no ? `第 ${r.episode_no} 集 · ` : '';
     const title = r.title || r.idea || '(没有标题)';
     return `<li data-run="${esc(r.run_id)}">
@@ -129,13 +155,20 @@ function renderRuns() {
 }
 
 function renderProjects() {
-  $('#projcount').textContent = state.projects.length ? `(${state.projects.length})` : '';
-  if (!state.projects.length) {
-    $('#projects').innerHTML = '<li class="dim" style="cursor:default">还没有项目。' +
-      '一次 run 一集就是单集模式（角色每集重新发明）</li>';
+  const all = state.projects || [];
+  const projects = all.filter((p) => matches(
+    [p.title, p.project_id, p.logline].filter(Boolean).join(' ')));
+  $('#projcount').textContent = projects.length === all.length
+    ? (all.length ? `(${all.length})` : '')
+    : `(${projects.length}/${all.length})`;
+  if (!projects.length) {
+    $('#projects').innerHTML = all.length
+      ? '<li class="dim" style="cursor:default">没有匹配的项目。</li>'
+      : '<li class="dim" style="cursor:default">还没有项目。' +
+        '一次 run 一集就是单集模式（角色每集重新发明）</li>';
     return;
   }
-  $('#projects').innerHTML = state.projects.map((p) => {
+  $('#projects').innerHTML = projects.map((p) => {
     if (p._error) {
       return `<li style="cursor:default"><span class="t" style="color:var(--bad)">` +
         `读不出来</span><span class="m">${esc(p._error)}</span></li>`;

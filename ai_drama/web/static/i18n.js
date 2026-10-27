@@ -269,6 +269,10 @@ const I18N = (() => {
       "There is dialogue but the video prompt never has anyone speak, so the dub sounds like voice-over.",
     "没有负向词，手和脸是图像模型最先崩的地方。":
       "No negative words; hands and faces are where image models break first.",
+    "搜标题、run id 或项目": "Search titles, run ids or projects",
+    "搜索标题、run id 或项目": "Search titles, run ids or projects",
+    "还没有 run。": "No runs yet.",
+    "还没有项目。": "No projects yet.",
     "资产查过": "Assets checked",
     "版": "v",
     "调用": "calls",
@@ -308,6 +312,11 @@ const I18N = (() => {
       `Scene description is ${m[1]} characters, over the ${m[2]} budget — the model will cherry-pick.`],
     [/^「(.+)」至少要 (\d+) 秒才做得完，这一镜只有 ([\d.]+) 秒。$/, (m) =>
       `“${m[1]}” needs at least ${m[2]}s; this shot is only ${m[3]}s.`],
+    [/没有匹配的 run。/, () => "No matching runs."],
+    [/没有匹配的项目。/, () => "No matching projects."],
+    [/^(\d+) 件$/, (m) => `${m[1]} item${m[1] === "1" ? "" : "s"}`],
+    [/^(\d+) 个$/, (m) => `${m[1]}`],
+    [/^\((\d+)\/(\d+)\)$/, (m) => `(${m[1]}/${m[2]})`],
     [/^发现 (\d+) 条$/, (m) => `Findings: ${m[1]}`],
     [/^（版本 (.+)），检查于 (.*)$/, (m) => `(v${m[1]}), checked ${m[2]}`],
     [/^(.*) 虚拟$/, (m) => `${m[1]} simulated`],

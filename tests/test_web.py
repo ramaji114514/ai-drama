@@ -483,6 +483,35 @@ def test_the_storyboard_hands_prompts_over_as_copyable_boxes():
     assert ".pftext" in css and ".cp" in css, "样式没跟上，框会贴在边上"
 
 
+def test_the_sidebar_can_be_searched():
+    """run 多到一定数量，滚动就不再是找到它的办法。
+
+    这条钉三件事：框在、两个列表都给过滤、过滤完还能点进去。
+    最后一条最容易被改坏 —— 列表是整段 `innerHTML` 重写的，
+    处理函数必须在**赋值之后**重新绑一遍，否则筛出来的条目点不动。
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    page = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="q"' in html and 'type="search"' in html, "侧栏没有搜索框"
+    assert html.index('id="q"') < html.index('id="projects"'), "搜索框应该在两个列表上面"
+
+    assert "function matches" in page, "没有匹配函数"
+    assert "toLowerCase" in page, "搜索不分大小写，否则 run_id 得一个字符一个字符记"
+    # 两个列表都过滤，别只筛 run 忘了项目
+    assert page.count("filter((p) => matches(") == 1
+    assert page.count("filter((r) => matches(") == 1
+    # 命中数用 3/5 表示，不然筛完看不出"是我筛掉了"还是"本来就这么少"
+    assert "${runs.length}/${all.length}" in page
+    assert "${projects.length}/${all.length}" in page
+    # 处理函数在 innerHTML 之后重新绑
+    assert "querySelectorAll('li[data-run]')" in page
+    assert "querySelectorAll('li[data-proj]')" in page
+
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert ".q {" in css, "搜索框没有样式，会顶到边上"
+
+
 def test_the_page_speaks_english_without_translating_the_prompts():
     """英文界面是"渲染之后再翻"，所以有两件事必须同时成立。
 
